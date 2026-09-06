@@ -1,0 +1,41 @@
+{
+  "name": "maqueda-core",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --webpack",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "setup-db": "bash scripts/setup-db.sh"
+  },
+  "dependencies": {
+    "next": "16.3.4",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "@prisma/client": "^5.0.0",
+    "bcryptjs": "^2.4.3",
+    "jose": "^4.14.4",
+    "nanoid": "^4.0.0",
+    "@types/bcryptjs": "^2.4.2",
+    "@radix-ui/react-slot": "^1.0.2",
+    "@radix-ui/react-label": "^2.0.2",
+    "class-variance-authority": "^0.7.0",
+    "tailwind-merge": "^1.14.0",
+    "clsx": "^2.0.0",
+    "lucide-react": "^0.263.1",
+    "next-themes": "^0.2.1",
+    "rate-limiter-flexible": "^2.4.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.4",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "prisma": "^5.0.0"
+  }
+}

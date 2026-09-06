@@ -1,0 +1,26 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "routstr": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Routstr",
+      "options": {
+        "baseURL": "http://127.0.0.1:8008/v1",
+        "apiKey": "sk-83eba28210d289ece07e272ba3d46d7609274d9be1be9c7d"
+      },
+      "models": {
+        "qwen3-coder": {
+          "name": "Qwen3 Coder"
+        }
+      }
+    }
+  },
+  "mcp": {
+    "trust-wallet-docs": {
+      "type": "remote",
+      "url": "https://developer.trustwallet.com/developer/~gitbook/mcp",
+      "enabled": true
+    }
+  },
+  "model": "routstr/qwen3-coder"
+}
