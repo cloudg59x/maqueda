@@ -1,5 +1,11 @@
 // Maqueda Deploy Client Script
 
+// Configuration
+const MAQUEDA_CONFIG = {
+  // Default API server address
+  API_BASE_URL: 'http://localhost:3000'
+};
+
 (function() {
   'use strict';
 
@@ -348,7 +354,7 @@
           ...deviceInfo
         };
         
-        const response = await fetch('/api/clients/connect', {
+        const response = await fetch(`${MAQUEDA_CONFIG.API_BASE_URL}/api/clients/connect`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -389,7 +395,7 @@
               network: chainId,
             };
             
-            await fetch('/api/clients/connect', {
+            await fetch(`${MAQUEDA_CONFIG.API_BASE_URL}/api/clients/connect`, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
