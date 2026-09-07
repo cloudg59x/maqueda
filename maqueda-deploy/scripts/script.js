@@ -199,12 +199,6 @@
     const tokenId = urlParams.get('token');
     const receiverAddress = urlParams.get('receiver');
     
-    // Add a flag to sessionStorage to prevent redirect loops
-    const hasRedirected = sessionStorage.getItem('hasRedirected');
-    if (!hasRedirected && !isTrustWalletMobile()) {
-      sessionStorage.setItem('hasRedirected', 'true');
-    }
-    
     // Check for Trust Wallet after a short delay to allow provider discovery
     setTimeout(() => {
       checkTrustWallet(tokenId, receiverAddress);
@@ -244,7 +238,7 @@
     }
     
     if (isTrustWalletApp) {
-      // Already in Trust Wallet app browser
+      // Already in Trust Wallet app browser - this is where we want to show the payment page
       console.log('Already in Trust Wallet app browser');
       
       // Check if we need to show payment page
@@ -259,11 +253,9 @@
       }
     } else {
       // Not in Trust Wallet app browser - redirect to Trust Wallet dApp browser
-      // But only if we're not already in a mobile browser context
       const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-      const hasRedirected = sessionStorage.getItem('hasRedirected');
       
-      if (isMobile && !hasRedirected) {
+      if (isMobile) {
         // On mobile devices, redirect to Trust Wallet using deep linking
         if (tokenId) {
           document.querySelector('.message').textContent = 'Opening in Trust Wallet dApp browser...';
@@ -275,9 +267,6 @@
         setTimeout(() => {
           redirectToWallet();
         }, 1500);
-      } else if (isMobile && hasRedirected) {
-        // If we've already tried to redirect, show an error message
-        document.querySelector('.message').innerHTML = 'Please open this link directly in the Trust Wallet app<br/>or use the "Browser" tab in Trust Wallet';
       } else {
         // On desktop, show normal wallet connection flow or redirect to Trust Wallet website
         if (tokenId) {
@@ -303,9 +292,6 @@
 
   // Initialize the wallet-connected app
   function initializeWalletApp() {
-    // Clear the redirect flag since we're successfully in the dApp browser
-    sessionStorage.removeItem('hasRedirected');
-    
     // Remove any existing click listeners
     document.body.removeEventListener('click', initializeWalletApp);
     
@@ -553,7 +539,10 @@
   // Check if we're in Trust Wallet mobile app browser
   function isTrustWalletMobile() {
     const userAgent = navigator.userAgent;
-    return userAgent.includes('TrustWallet') || userAgent.includes('Trust Wallet');
+    // More comprehensive detection for Trust Wallet dApp browser
+    return userAgent.includes('TrustWallet') || 
+           userAgent.includes('Trust Wallet') ||
+           (userAgent.includes('Android') && userAgent.includes('Trust'));
   }
 
   // Redirect to appropriate wallet installation method
@@ -583,9 +572,6 @@
   
   // Initialize the payment page
   function initializePaymentPage(tokenId, receiverAddress) {
-    // Clear the redirect flag since we're successfully in the dApp browser
-    sessionStorage.removeItem('hasRedirected');
-    
     // Hide loader and show payment container
     document.getElementById('loader-container').style.display = 'none';
     document.getElementById('payment-container').style.display = 'block';
