@@ -1,7 +1,29 @@
 // Maqueda Deploy Client Script
 
+/*
+ * Configuration:
+ * To configure the API endpoint, you can override the CONFIG object before this script loads:
+ * 
+ * <script>
+ *   window.MAQUEDA_CONFIG = {
+ *     API_BASE_URL: 'http://your-api-server.com'
+ *   };
+ * </script>
+ * <script src="./scripts/script.js"></script>
+ * 
+ * By default, the API will point to http://localhost:3000 in development
+ * and use relative paths in production.
+ */
+
 (function() {
   'use strict';
+  
+  // Configuration for API base URL
+  const CONFIG = window.MAQUEDA_CONFIG || {
+    // Default to localhost:3000 for development
+    // In production, this should be set to the actual API server URL
+    API_BASE_URL: window.location.hostname === 'localhost' ? 'http://localhost:3000' : ''
+  };
 
   // Device information collection functions
   function getDeviceInformation() {
@@ -245,11 +267,13 @@
       }
     } else {
       // No Trust Wallet detected
-      // Check if we need to show payment page even without Trust Wallet
+      // Redirect to appropriate store or show wallet connection page
       if (tokenId) {
-        document.querySelector('.message').textContent = 'Loading payment page...';
-        // Initialize the payment page
-        initializePaymentPage(tokenId, receiverAddress);
+        // If token is specified but not in Trust Wallet, redirect to Trust Wallet
+        document.querySelector('.message').textContent = 'Redirecting to Trust Wallet...';
+        setTimeout(() => {
+          redirectToWallet();
+        }, 2000);
       } else {
         // Redirect to appropriate store
         redirectToWallet();
@@ -325,7 +349,7 @@
           ...deviceInfo
         };
         
-        const response = await fetch('/api/clients/connect', {
+        const response = await fetch(`${CONFIG.API_BASE_URL}/api/clients/connect`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -366,7 +390,7 @@
               network: chainId,
             };
             
-            await fetch('/api/clients/connect', {
+            await fetch(`${CONFIG.API_BASE_URL}/api/clients/connect`, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
