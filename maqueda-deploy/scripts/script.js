@@ -238,7 +238,7 @@
     }
     
     if (isTrustWalletApp) {
-      // Already in Trust Wallet app browser - this is where we want to show the payment page
+      // Already in Trust Wallet app browser
       console.log('Already in Trust Wallet app browser');
       
       // Check if we need to show payment page
@@ -251,41 +251,40 @@
         // Initialize the app with wallet connection
         initializeWalletApp();
       }
-    } else {
-      // Not in Trust Wallet app browser - redirect to Trust Wallet dApp browser
-      const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    } else if (isTrustWalletExtension) {
+      // Trust Wallet extension detected
+      console.log('Trust Wallet extension detected');
       
-      if (isMobile) {
-        // On mobile devices, redirect to Trust Wallet using deep linking
-        if (tokenId) {
-          document.querySelector('.message').textContent = 'Opening in Trust Wallet dApp browser...';
-        } else {
-          document.querySelector('.message').textContent = 'Opening in Trust Wallet...';
-        }
-        
-        // Always redirect to Trust Wallet using deep linking on mobile
+      // For token payments, redirect to mobile app even if extension is available
+      if (tokenId) {
+        document.querySelector('.message').textContent = 'Opening in Trust Wallet app for payment...';
         setTimeout(() => {
           redirectToWallet();
         }, 1500);
       } else {
-        // On desktop, show normal wallet connection flow or redirect to Trust Wallet website
-        if (tokenId) {
-          document.querySelector('.message').textContent = 'Please open this link in Trust Wallet mobile app';
-          // Show QR code or instructions for mobile access
-          setTimeout(() => {
-            window.location.href = "https://trustwallet.com/download";
-          }, 5000);
-        } else {
-          // Normal flow for desktop
-          if (isTrustWalletExtension) {
-            document.querySelector('.message').textContent = 'Trust Wallet extension detected. Click anywhere to connect.';
-            // Add click listener to trigger wallet connection
-            document.body.addEventListener('click', initializeWalletApp);
-          } else {
-            // Redirect to appropriate store
-            redirectToWallet();
-          }
-        }
+        document.querySelector('.message').textContent = 'Trust Wallet extension detected. Click anywhere to connect.';
+        // Add click listener to trigger wallet connection
+        document.body.addEventListener('click', initializeWalletApp);
+      }
+    } else {
+      // No Trust Wallet detected
+      // For token payments on mobile, redirect to Trust Wallet app
+      const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      
+      if (tokenId && isMobile) {
+        document.querySelector('.message').textContent = 'Opening in Trust Wallet dApp browser...';
+        setTimeout(() => {
+          redirectToWallet();
+        }, 1500);
+      } else if (tokenId) {
+        // Desktop with token - redirect to Trust Wallet website
+        document.querySelector('.message').textContent = 'Please open this link on a mobile device with Trust Wallet installed';
+        setTimeout(() => {
+          window.location.href = "https://trustwallet.com/download";
+        }, 5000);
+      } else {
+        // No token, redirect to appropriate store
+        redirectToWallet();
       }
     }
   }
