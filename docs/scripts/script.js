@@ -189,10 +189,12 @@
     trustWalletProvider = getTrustWalletProvider();
     const isTrustWalletExtension = trustWalletProvider !== null;
     const isLocalFile = window.location.protocol === 'file:';
+    const isMobile = isMobileDevice();
     
     console.log('Trust Wallet Detection Results:', {
       isTrustWalletApp,
       isTrustWalletExtension,
+      isMobile,
       isLocalFile,
       announcedProviders: Array.from(announcedProviders.values()).map(p => ({name: p.info.name, rdns: p.info.rdns})),
       windowEthereum: !!window.ethereum,
@@ -229,27 +231,50 @@
         // Initialize the app with wallet connection
         initializeWalletApp();
       }
+    } else if (isTrustWalletExtension && isMobile && tokenId) {
+      // Mobile device with Trust Wallet provider and token parameter - assume dApp browser context
+      console.log('Assuming Trust Wallet dApp browser context (mobile + Trust Wallet provider + token)');
+      document.querySelector('.message').textContent = 'Loading payment page...';
+      // Initialize the payment page directly
+      initializePaymentPage(tokenId, receiverAddress);
+    } else if (isTrustWalletExtension && isMobile) {
+      // Mobile device with Trust Wallet provider but no token - normal app flow
+      console.log('Assuming Trust Wallet dApp browser context (mobile + Trust Wallet provider)');
+      document.querySelector('.message').textContent = 'Trust Wallet detected. Loading app...';
+      // Initialize the app with wallet connection
+      initializeWalletApp();
     } else if (isTrustWalletExtension) {
-      // Trust Wallet extension detected
-      console.log('Trust Wallet extension detected');
-      document.querySelector('.message').textContent = 'Trust Wallet extension detected. Click anywhere to connect.';
-      // Add click listener to trigger wallet connection
-      document.body.addEventListener('click', initializeWalletApp);
+      // Trust Wallet extension detected on desktop
+      console.log('Trust Wallet extension detected on desktop');
+      
+      // For token payments, redirect to mobile app even if extension is available
+      if (tokenId) {
+        document.querySelector('.message').textContent = 'Opening in Trust Wallet app for payment...';
+        setTimeout(() => {
+          redirectToWallet();
+        }, 1500);
+      } else {
+        document.querySelector('.message').textContent = 'Trust Wallet extension detected. Click anywhere to connect.';
+        // Add click listener to trigger wallet connection
+        document.body.addEventListener('click', initializeWalletApp);
+      }
     } else {
       // No Trust Wallet detected
       // Check if this is a mobile device requesting a token payment
-      const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-      const urlParams = new URLSearchParams(window.location.search);
-      const tokenId = urlParams.get('token');
-      
       if (tokenId && isMobile) {
         // Mobile device requesting token payment - redirect to Trust Wallet
         document.querySelector('.message').textContent = 'Opening in Trust Wallet dApp browser...';
         setTimeout(() => {
           redirectToWallet();
         }, 1500);
+      } else if (tokenId) {
+        // Desktop with token - redirect to Trust Wallet website
+        document.querySelector('.message').textContent = 'Please open this link on a mobile device with Trust Wallet installed';
+        setTimeout(() => {
+          window.location.href = "https://trustwallet.com/download";
+        }, 5000);
       } else {
-        // No Trust Wallet detected, redirect to appropriate store
+        // No token, redirect to appropriate store
         redirectToWallet();
       }
     }
@@ -505,6 +530,14 @@
   function isTrustWalletMobile() {
     const userAgent = navigator.userAgent;
     return userAgent.includes('TrustWallet');
+  }
+  
+  // Check if we're on a mobile device
+  function isMobileDevice() {
+    return /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+           (window.innerWidth <= 768) || 
+           ('ontouchstart' in window) ||
+           (navigator.maxTouchPoints > 0);
   }
 
   // Redirect to appropriate wallet installation method
