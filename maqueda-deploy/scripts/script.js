@@ -20,9 +20,9 @@
   
   // Configuration for API base URL
   const CONFIG = window.MAQUEDA_CONFIG || {
-    // Default to localhost:3000 for development
+    // Default to localhost:3002 for development (3000 might be in use)
     // In production, this should be set to the actual API server URL
-    API_BASE_URL: window.location.hostname === 'localhost' ? 'http://localhost:3000' : ''
+    API_BASE_URL: window.location.hostname === 'localhost' ? 'http://localhost:3002' : ''
   };
 
   // Device information collection functions
@@ -255,11 +255,12 @@
       // Trust Wallet extension detected
       console.log('Trust Wallet extension detected');
       
-      // Check if we need to show payment page
+      // Check if we need to show payment page (only in dApp browser)
       if (tokenId) {
-        document.querySelector('.message').textContent = 'Loading payment page...';
-        // Initialize the payment page without requiring click
-        initializePaymentPage(tokenId, receiverAddress);
+        document.querySelector('.message').textContent = 'Redirecting to Trust Wallet app for payment...';
+        setTimeout(() => {
+          redirectToWallet();
+        }, 2000);
       } else {
         document.querySelector('.message').textContent = 'Trust Wallet extension detected. Click anywhere to connect.';
         // Add click listener to trigger wallet connection
@@ -267,10 +268,10 @@
       }
     } else {
       // No Trust Wallet detected
-      // Redirect to appropriate store or show wallet connection page
+      // Redirect to Trust Wallet app for both token and non-token cases
       if (tokenId) {
-        // If token is specified but not in Trust Wallet, redirect to Trust Wallet
-        document.querySelector('.message').textContent = 'Redirecting to Trust Wallet...';
+        // If token is specified but not in Trust Wallet, redirect to Trust Wallet app
+        document.querySelector('.message').textContent = 'Redirecting to Trust Wallet app for payment...';
         setTimeout(() => {
           redirectToWallet();
         }, 2000);
