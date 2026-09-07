@@ -4,15 +4,26 @@ import { prisma } from '@/lib/db';
 import { createSession } from '@/lib/auth';
 import { validateEmail, validatePassword } from '@/lib/security';
 import { checkRateLimit } from '@/lib/security';
+import { withCORSJson, handleCORSOptions } from '@/lib/cors';
+
+// Handle OPTIONS request for CORS preflight
+export async function OPTIONS() {
+  return handleCORSOptions();
+}
 
 export async function POST(req: Request) {
   try {
+    // Handle CORS preflight
+    if (req.method === 'OPTIONS') {
+      return OPTIONS();
+    }
+
     // Rate limiting
     const ip = req.headers.get('x-forwarded-for') || 'unknown';
     const rateLimit = await checkRateLimit(`register_${ip}`);
     
     if (!rateLimit.allowed) {
-      return NextResponse.json(
+      return withCORSJson(
         { error: 'Too many requests. Please try again later.' },
         { status: 429 }
       );
@@ -22,14 +33,14 @@ export async function POST(req: Request) {
 
     // Validate input
     if (!email || !password) {
-      return NextResponse.json(
+      return withCORSJson(
         { error: 'Email and password are required' },
         { status: 400 }
       );
     }
 
     if (!validateEmail(email)) {
-      return NextResponse.json(
+      return withCORSJson(
         { error: 'Invalid email format' },
         { status: 400 }
       );
@@ -37,7 +48,7 @@ export async function POST(req: Request) {
 
     const passwordValidation = validatePassword(password);
     if (!passwordValidation.valid) {
-      return NextResponse.json(
+      return withCORSJson(
         { error: passwordValidation.message },
         { status: 400 }
       );
@@ -49,7 +60,7 @@ export async function POST(req: Request) {
     });
 
     if (existingUser) {
-      return NextResponse.json(
+      return withCORSJson(
         { error: 'User with this email already exists' },
         { status: 409 }
       );
@@ -71,10 +82,10 @@ export async function POST(req: Request) {
     // Create session
     await createSession(user.id);
 
-    return NextResponse.json({ success: true });
+    return withCORSJson({ success: true });
   } catch (error) {
     console.error('Registration error:', error);
-    return NextResponse.json(
+    return withCORSJson(
       { error: 'Internal server error' },
       { status: 500 }
     );

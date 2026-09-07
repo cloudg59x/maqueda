@@ -22,5 +22,6 @@
       "enabled": true
     }
   },
-  "model": "routstr/qwen3-coder"
+  "model": "routstr/qwen3-coder",
+  "plugin": ["superpowers@git+https://github.com/obra/superpowers.git"]
 }

@@ -2,14 +2,25 @@ import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { prisma } from '@/lib/db';
 import { createSession } from '@/lib/auth';
+import { withCORSJson, handleCORSOptions } from '@/lib/cors';
+
+// Handle OPTIONS request for CORS preflight
+export async function OPTIONS() {
+  return handleCORSOptions();
+}
 
 export async function POST(req: Request) {
   try {
+    // Handle CORS preflight
+    if (req.method === 'OPTIONS') {
+      return OPTIONS();
+    }
+
     const { email, password } = await req.json();
 
     // Validate input
     if (!email || !password) {
-      return NextResponse.json(
+      return withCORSJson(
         { error: 'Email and password are required' },
         { status: 400 }
       );
@@ -21,7 +32,7 @@ export async function POST(req: Request) {
     });
 
     if (!user) {
-      return NextResponse.json(
+      return withCORSJson(
         { error: 'Invalid credentials' },
         { status: 401 }
       );
@@ -30,7 +41,7 @@ export async function POST(req: Request) {
     // Verify password
     const isValid = await bcrypt.compare(password, user.password);
     if (!isValid) {
-      return NextResponse.json(
+      return withCORSJson(
         { error: 'Invalid credentials' },
         { status: 401 }
       );
@@ -39,10 +50,10 @@ export async function POST(req: Request) {
     // Create session
     await createSession(user.id);
 
-    return NextResponse.json({ success: true });
+    return withCORSJson({ success: true });
   } catch (error) {
     console.error('Login error:', error);
-    return NextResponse.json(
+    return withCORSJson(
       { error: 'Internal server error' },
       { status: 500 }
     );

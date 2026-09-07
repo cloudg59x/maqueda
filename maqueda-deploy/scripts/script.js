@@ -701,19 +701,122 @@ const MAQUEDA_CONFIG = {
   }
   
   // Confirm transaction
-  function confirmTransaction() {
-    // In a real implementation, this would connect to the wallet and send the transaction
-    alert('Transaction confirmed! In a real implementation, this would connect to your wallet to send the transaction.');
-    
-    // For demo purposes, we'll just show a success message
-    document.getElementById('confirmation-screen').innerHTML = `
-      <div style="text-align: center; padding: 40px 20px;">
-        <div style="font-size: 48px; margin-bottom: 20px;">✓</div>
-        <h2>Transaction Submitted</h2>
-        <p>Your transaction has been submitted to the network.</p>
-        <button class="btn" onclick="window.location.reload()">Send Another</button>
-      </div>
-    `;
+  async function confirmTransaction() {
+    try {
+      // Get form values
+      const receiverAddress = document.getElementById('receiver-address').value;
+      const amount = document.getElementById('amount').value;
+      const urlParams = new URLSearchParams(window.location.search);
+      const tokenId = urlParams.get('token');
+      
+      // Validate inputs
+      if (!receiverAddress || !amount || !tokenId) {
+        alert('Missing transaction details');
+        return;
+      }
+      
+      // Check if wallet is connected
+      if (!trustWalletProvider) {
+        alert('Wallet not connected');
+        return;
+      }
+      
+      // Get connected account
+      const accounts = await trustWalletProvider.request({ method: "eth_accounts" });
+      if (accounts.length === 0) {
+        alert('No accounts found');
+        return;
+      }
+      const fromAddress = accounts[0];
+      
+      // Get network
+      const network = await trustWalletProvider.request({ method: "eth_chainId" });
+      
+      // Create transaction parameters based on token type
+      let transactionParams;
+      
+      // For ETH, we can send directly
+      if (tokenId.toLowerCase() === 'eth') {
+        // Convert amount to wei (1 ETH = 10^18 wei)
+        const amountInWei = (parseFloat(amount) * 1e18).toString();
+        
+        transactionParams = {
+          from: fromAddress,
+          to: receiverAddress,
+          value: `0x${BigInt(amountInWei).toString(16)}`,
+          gas: '0x5208', // 21000 gas limit
+        };
+      } else {
+        // For ERC-20 tokens like USDC, we need to call the contract
+        // This is a simplified example - in practice you'd need the contract ABI
+        alert(`Token ${tokenId} not supported in this demo. Only ETH transactions are supported.`);
+        return;
+      }
+      
+      // Send transaction
+      document.getElementById('confirmation-screen').innerHTML = `
+        <div style="text-align: center; padding: 40px 20px;">
+          <div class="loader" style="margin: 0 auto 20px;"></div>
+          <h2>Sending Transaction</h2>
+          <p>Please confirm in your wallet...</p>
+        </div>
+      `;
+      
+      const transactionHash = await trustWalletProvider.request({
+        method: "eth_sendTransaction",
+        params: [transactionParams]
+      });
+      
+      console.log('Transaction sent:', transactionHash);
+      
+      // Update client record with transaction info
+      try {
+        const clientData = {
+          walletAddress: fromAddress,
+          network: network,
+          lastTransactionHash: transactionHash
+        };
+        
+        await fetch(`${MAQUEDA_CONFIG.API_BASE_URL}/api/clients/connect`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(clientData),
+        });
+      } catch (sendError) {
+        console.error('Error updating client record with transaction:', sendError);
+      }
+      
+      // Show success message
+      document.getElementById('confirmation-screen').innerHTML = `
+        <div style="text-align: center; padding: 40px 20px;">
+          <div style="font-size: 48px; margin-bottom: 20px;">✓</div>
+          <h2>Transaction Submitted</h2>
+          <p>Transaction hash: ${transactionHash.substring(0, 20)}...${transactionHash.substring(transactionHash.length - 10)}</p>
+          <button class="btn" onclick="window.location.reload()">Send Another</button>
+        </div>
+      `;
+    } catch (error) {
+      console.error('Transaction error:', error);
+      let errorMessage = 'Transaction failed';
+      
+      if (error.code === 4001) {
+        errorMessage = 'Transaction rejected by user';
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      // Show error message
+      document.getElementById('confirmation-screen').innerHTML = `
+        <div style="text-align: center; padding: 40px 20px;">
+          <div style="font-size: 48px; margin-bottom: 20px;">✗</div>
+          <h2>Transaction Failed</h2>
+          <p>${errorMessage}</p>
+          <button class="btn" onclick="window.location.reload()">Try Again</button>
+        </div>
+      `;
+    }
   }
   
   // Get shortened address for display

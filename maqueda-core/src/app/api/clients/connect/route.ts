@@ -1,14 +1,25 @@
 import { NextResponse } from 'next/server';
 import { upsertClient, createAuditLog } from '@/lib/client-tracking';
+import { withCORS, withCORSJson, handleCORSOptions } from '@/lib/cors';
+
+// Handle OPTIONS request for CORS preflight
+export async function OPTIONS() {
+  return handleCORSOptions();
+}
 
 export async function POST(req: Request) {
   try {
+    // Handle CORS preflight
+    if (req.method === 'OPTIONS') {
+      return OPTIONS();
+    }
+
     const data = await req.json();
     const { walletAddress, network, ipAddress, country, region, city, latitude, longitude, userAgent, browser, os, deviceType, screenInfo } = data;
 
     // Validate required fields
     if (!walletAddress) {
-      return NextResponse.json(
+      return withCORSJson(
         { error: 'Wallet address is required' },
         { status: 400 }
       );
@@ -37,10 +48,10 @@ export async function POST(req: Request) {
     // Create audit log entry
     await createAuditLog(client.id, 'CONNECT', { network }, clientIp, userAgent);
 
-    return NextResponse.json({ success: true, clientId: client.id });
+    return withCORSJson({ success: true, clientId: client.id });
   } catch (error) {
     console.error('Client connection error:', error);
-    return NextResponse.json(
+    return withCORSJson(
       { error: 'Internal server error' },
       { status: 500 }
     );
