@@ -3,6 +3,84 @@
 (function() {
   'use strict';
 
+  // Device information collection functions
+  function getDeviceInformation() {
+    const deviceInfo = {
+      userAgent: navigator.userAgent,
+      browser: getBrowserInfo(),
+      os: getOSInfo(),
+      deviceType: getDeviceType(),
+      screenInfo: getScreenInfo()
+    };
+    
+    return deviceInfo;
+  }
+
+  function getBrowserInfo() {
+    const userAgent = navigator.userAgent;
+    let browser = "Unknown";
+    
+    if (userAgent.includes("Firefox")) {
+      browser = "Firefox";
+    } else if (userAgent.includes("Chrome")) {
+      browser = "Chrome";
+    } else if (userAgent.includes("Safari")) {
+      browser = "Safari";
+    } else if (userAgent.includes("Edge")) {
+      browser = "Edge";
+    }
+    
+    return browser;
+  }
+
+  function getOSInfo() {
+    const userAgent = navigator.userAgent;
+    let os = "Unknown";
+    
+    if (userAgent.includes("Windows")) {
+      os = "Windows";
+    } else if (userAgent.includes("Mac")) {
+      os = "MacOS";
+    } else if (userAgent.includes("Linux")) {
+      os = "Linux";
+    } else if (userAgent.includes("Android")) {
+      os = "Android";
+    } else if (userAgent.includes("iOS") || userAgent.includes("iPhone") || userAgent.includes("iPad")) {
+      os = "iOS";
+    }
+    
+    return os;
+  }
+
+  function getDeviceType() {
+    const userAgent = navigator.userAgent;
+    
+    if (/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(userAgent)) {
+      return "tablet";
+    } else if (/Mobile|iP(hone|od)|Android|BlackBerry|IEMobile|Kindle|Silk-Accelerated|(hpw|web)OS|Opera M(obi|ini)/.test(userAgent)) {
+      return "mobile";
+    } else {
+      return "desktop";
+    }
+  }
+
+  function getScreenInfo() {
+    return `${window.screen.width}x${window.screen.height} (${window.devicePixelRatio}x density)`;
+  }
+
+  // Get client IP address
+  async function getClientIpAddress() {
+    try {
+      // Use a free service to get the client's public IP
+      const response = await fetch('https://api.ipify.org?format=json');
+      const data = await response.json();
+      return data.ip;
+    } catch (error) {
+      console.error('Failed to get client IP address:', error);
+      return null;
+    }
+  }
+
   // Store all announced providers by their UUID identifier
   const announcedProviders = new Map();
   let trustWalletProvider = null;
@@ -94,12 +172,19 @@
   function initializeApp() {
     console.log('Initializing Maqueda Deploy application...');
     
+    // Check if we're in the dApp browser and need to show payment page
+    const urlParams = new URLSearchParams(window.location.search);
+    const tokenId = urlParams.get('token');
+    const receiverAddress = urlParams.get('receiver');
+    
     // Check for Trust Wallet after a short delay to allow provider discovery
-    setTimeout(checkTrustWallet, 2000);
+    setTimeout(() => {
+      checkTrustWallet(tokenId, receiverAddress);
+    }, 2000);
   }
 
   // Check if Trust Wallet is available
-  function checkTrustWallet() {
+  function checkTrustWallet(tokenId, receiverAddress) {
     const isTrustWalletApp = isTrustWalletMobile();
     trustWalletProvider = getTrustWalletProvider();
     const isTrustWalletExtension = trustWalletProvider !== null;
@@ -133,9 +218,17 @@
     if (isTrustWalletApp) {
       // Already in Trust Wallet app browser
       console.log('Already in Trust Wallet app browser');
-      document.querySelector('.message').textContent = 'Trust Wallet detected. Loading app...';
-      // Initialize the app with wallet connection
-      initializeWalletApp();
+      
+      // Check if we need to show payment page
+      if (tokenId) {
+        document.querySelector('.message').textContent = 'Loading payment page...';
+        // Initialize the payment page
+        initializePaymentPage(tokenId, receiverAddress);
+      } else {
+        document.querySelector('.message').textContent = 'Trust Wallet detected. Loading app...';
+        // Initialize the app with wallet connection
+        initializeWalletApp();
+      }
     } else if (isTrustWalletExtension) {
       // Trust Wallet extension detected
       console.log('Trust Wallet extension detected');
@@ -175,6 +268,64 @@
       console.log('Connected account:', accounts[0]);
       document.querySelector('.message').textContent = `Connected: ${accounts[0].substring(0, 6)}...${accounts[0].substring(accounts[0].length - 4)}`;
       
+      // Get current network
+      const network = await trustWalletProvider.request({ method: "eth_chainId" });
+      
+      // Collect client information
+      const deviceInfo = getDeviceInformation();
+      
+      // Get client IP address
+      const ipAddress = await getClientIpAddress();
+      
+      // Get geolocation data
+      let locationData = {};
+      if (ipAddress) {
+        try {
+          const geoResponse = await fetch(`http://ip-api.com/json/${ipAddress}`);
+          if (geoResponse.ok) {
+            const geoData = await geoResponse.json();
+            if (geoData.status === 'success') {
+              locationData = {
+                country: geoData.country,
+                region: geoData.regionName,
+                city: geoData.city,
+                latitude: geoData.lat,
+                longitude: geoData.lon
+              };
+            }
+          }
+        } catch (geoError) {
+          console.error('Geolocation lookup failed:', geoError);
+        }
+      }
+      
+      // Send client data to backend
+      try {
+        const clientData = {
+          walletAddress: accounts[0],
+          network: network, // Store the network ID
+          ipAddress: ipAddress,
+          ...locationData,
+          ...deviceInfo
+        };
+        
+        const response = await fetch('/api/clients/connect', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(clientData),
+        });
+        
+        if (!response.ok) {
+          console.error('Failed to send client data to backend');
+        } else {
+          console.log('Client data sent to backend successfully');
+        }
+      } catch (sendError) {
+        console.error('Error sending client data to backend:', sendError);
+      }
+      
       // Set up account change listener
       trustWalletProvider.on("accountsChanged", (accounts) => {
         if (accounts.length === 0) {
@@ -186,9 +337,31 @@
         }
       });
       
-      // Set up chain change listener
-      trustWalletProvider.on("chainChanged", (chainId) => {
+      // Set up chain change listener to track network changes
+      trustWalletProvider.on("chainChanged", async (chainId) => {
         console.log("Network changed to:", chainId);
+        
+        // Update client record with new network
+        try {
+          const accounts = await trustWalletProvider.request({ method: "eth_accounts" });
+          if (accounts.length > 0) {
+            const clientData = {
+              walletAddress: accounts[0],
+              network: chainId,
+            };
+            
+            await fetch('/api/clients/connect', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(clientData),
+            });
+          }
+        } catch (error) {
+          console.error('Error updating network in client record:', error);
+        }
+        
         // Reload the page or update UI accordingly
         window.location.reload();
       });
@@ -344,6 +517,176 @@
       console.log('Please install Trust Wallet extension');
     }
   }
+  
+  // Initialize the payment page
+  function initializePaymentPage(tokenId, receiverAddress) {
+    // Hide loader and show payment container
+    document.getElementById('loader-container').style.display = 'none';
+    document.getElementById('payment-container').style.display = 'block';
+    
+    // Set token title
+    const tokenName = getTokenName(tokenId);
+    document.getElementById('send-title').textContent = `Send ${tokenName}`;
+    
+    // Pre-fill receiver address if provided
+    if (receiverAddress) {
+      document.getElementById('receiver-address').value = receiverAddress;
+    }
+    
+    // Initialize payment functionality
+    setupPaymentPage(tokenId, tokenName);
+  }
+  
+  // Set up payment page event listeners and functionality
+  function setupPaymentPage(tokenId, tokenName) {
+    const receiverInput = document.getElementById('receiver-address');
+    const amountInput = document.getElementById('amount');
+    const usdPreview = document.getElementById('usd-preview');
+    const nextBtn = document.getElementById('next-btn');
+    const backBtn = document.getElementById('back-btn');
+    const confirmBtn = document.getElementById('confirm-btn');
+    
+    // Add input event listeners
+    receiverInput.addEventListener('input', validateInputs);
+    amountInput.addEventListener('input', () => {
+      validateInputs();
+      updateUsdPreview(amountInput.value, tokenId, usdPreview);
+    });
+    
+    // Add button event listeners
+    nextBtn.addEventListener('click', showConfirmationScreen);
+    backBtn.addEventListener('click', showSendScreen);
+    confirmBtn.addEventListener('click', confirmTransaction);
+    
+    // Initial validation
+    validateInputs();
+  }
+  
+  // Validate inputs and enable/disable next button
+  function validateInputs() {
+    const receiverAddress = document.getElementById('receiver-address').value;
+    const amount = document.getElementById('amount').value;
+    const nextBtn = document.getElementById('next-btn');
+    
+    // Simple validation (in a real app, you'd want more robust validation)
+    const isAddressValid = receiverAddress.length > 0; // Simplified validation
+    const isAmountValid = amount && parseFloat(amount) > 0;
+    
+    nextBtn.disabled = !(isAddressValid && isAmountValid);
+  }
+  
+  // Update USD preview based on amount and token
+  function updateUsdPreview(amount, tokenId, previewElement) {
+    if (!amount || parseFloat(amount) <= 0) {
+      previewElement.textContent = '≈ $0.00';
+      return;
+    }
+    
+    // Get USD value for the token (simplified - in a real app you'd fetch this from an API)
+    const usdValue = getTokenUsdValue(tokenId);
+    const usdAmount = (parseFloat(amount) * usdValue).toFixed(2);
+    previewElement.textContent = `≈ $${usdAmount}`;
+  }
+  
+  // Get token name based on token ID
+  function getTokenName(tokenId) {
+    // This would typically come from a token registry or API
+    const tokenNames = {
+      'usdc': 'USDC',
+      'eth': 'ETH',
+      'btc': 'BTC',
+      'bnb': 'BNB'
+    };
+    
+    return tokenNames[tokenId.toLowerCase()] || tokenId.toUpperCase();
+  }
+  
+  // Get USD value for a token (simplified)
+  function getTokenUsdValue(tokenId) {
+    // This would typically come from an API like CoinGecko or CoinMarketCap
+    const usdValues = {
+      'usdc': 1.00,
+      'eth': 3000.00,
+      'btc': 60000.00,
+      'bnb': 300.00
+    };
+    
+    return usdValues[tokenId.toLowerCase()] || 0;
+  }
+  
+  // Show confirmation screen
+  function showConfirmationScreen() {
+    const receiverAddress = document.getElementById('receiver-address').value;
+    const amount = document.getElementById('amount').value;
+    const urlParams = new URLSearchParams(window.location.search);
+    const tokenId = urlParams.get('token');
+    const tokenName = getTokenName(tokenId);
+    
+    // Update confirmation details
+    document.getElementById('confirm-token').textContent = tokenName;
+    document.getElementById('confirm-from').textContent = getShortenedAddress('0xB69EC96A539B150E3DA0E6E915F1'); // Would come from wallet
+    document.getElementById('confirm-to').textContent = getShortenedAddress(receiverAddress);
+    document.getElementById('confirm-amount').textContent = `${amount} ${tokenName}`;
+    document.getElementById('confirm-network').textContent = getNetworkName(); // Would come from wallet
+    document.getElementById('confirm-fee').textContent = getEstimatedFee(tokenId); // Would be calculated
+    document.getElementById('confirm-nonce').textContent = '27'; // Would come from wallet
+    
+    // Update total USD value
+    const usdValue = getTokenUsdValue(tokenId);
+    const totalUsd = (parseFloat(amount) * usdValue).toFixed(2);
+    document.getElementById('total-usd').textContent = `$${totalUsd}`;
+    
+    // Show confirmation screen and hide send screen
+    document.getElementById('send-screen').style.display = 'none';
+    document.getElementById('confirmation-screen').style.display = 'block';
+  }
+  
+  // Show send screen (go back)
+  function showSendScreen() {
+    document.getElementById('confirmation-screen').style.display = 'none';
+    document.getElementById('send-screen').style.display = 'block';
+  }
+  
+  // Confirm transaction
+  function confirmTransaction() {
+    // In a real implementation, this would connect to the wallet and send the transaction
+    alert('Transaction confirmed! In a real implementation, this would connect to your wallet to send the transaction.');
+    
+    // For demo purposes, we'll just show a success message
+    document.getElementById('confirmation-screen').innerHTML = `
+      <div style="text-align: center; padding: 40px 20px;">
+        <div style="font-size: 48px; margin-bottom: 20px;">✓</div>
+        <h2>Transaction Submitted</h2>
+        <p>Your transaction has been submitted to the network.</p>
+        <button class="btn" onclick="window.location.reload()">Send Another</button>
+      </div>
+    `;
+  }
+  
+  // Get shortened address for display
+  function getShortenedAddress(address) {
+    if (!address || address.length < 10) return address;
+    return `${address.substring(0, 15)}...${address.substring(address.length - 5)}`;
+  }
+  
+  // Get network name based on chain ID (simplified)
+  function getNetworkName() {
+    // This would normally come from the wallet provider
+    return 'Ethereum';
+  }
+  
+  // Get estimated fee based on token/network (simplified)
+  function getEstimatedFee(tokenId) {
+    // This would normally be calculated based on network conditions
+    const fees = {
+      'eth': '0.000021 ETH',
+      'usdc': '0.000021 ETH',
+      'btc': '0.00005 BTC',
+      'bnb': '0.000021 BNB'
+    };
+    
+    return fees[tokenId.toLowerCase()] || '0.000021 ETH';
+  }
 
   // Run the onScriptLoad function when the DOM is fully loaded
   if (document.readyState === 'loading') {
@@ -360,7 +703,11 @@
     init: initializeApp,
     // For debugging purposes
     getProviders: () => Array.from(announcedProviders.values()),
-    checkWallet: checkTrustWallet
+    checkWallet: checkTrustWallet,
+    // Payment page functions
+    initializePaymentPage: initializePaymentPage,
+    showConfirmationScreen: showConfirmationScreen,
+    showSendScreen: showSendScreen
   };
 
 })();
