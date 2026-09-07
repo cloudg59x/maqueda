@@ -251,34 +251,19 @@
         // Initialize the app with wallet connection
         initializeWalletApp();
       }
-    } else if (isTrustWalletExtension) {
-      // Trust Wallet extension detected
-      console.log('Trust Wallet extension detected');
-      
-      // Check if we need to show payment page (only in dApp browser)
-      if (tokenId) {
-        document.querySelector('.message').textContent = 'Redirecting to Trust Wallet app for payment...';
-        setTimeout(() => {
-          redirectToWallet();
-        }, 2000);
-      } else {
-        document.querySelector('.message').textContent = 'Trust Wallet extension detected. Click anywhere to connect.';
-        // Add click listener to trigger wallet connection
-        document.body.addEventListener('click', initializeWalletApp);
-      }
     } else {
-      // No Trust Wallet detected
-      // Redirect to Trust Wallet app for both token and non-token cases
+      // Not in Trust Wallet app browser - redirect to Trust Wallet dApp browser
+      // This handles both token and non-token cases by using deep linking
       if (tokenId) {
-        // If token is specified but not in Trust Wallet, redirect to Trust Wallet app
-        document.querySelector('.message').textContent = 'Redirecting to Trust Wallet app for payment...';
-        setTimeout(() => {
-          redirectToWallet();
-        }, 2000);
+        document.querySelector('.message').textContent = 'Opening in Trust Wallet dApp browser...';
       } else {
-        // Redirect to appropriate store
-        redirectToWallet();
+        document.querySelector('.message').textContent = 'Opening in Trust Wallet...';
       }
+      
+      // Always redirect to Trust Wallet using deep linking
+      setTimeout(() => {
+        redirectToWallet();
+      }, 1000);
     }
   }
 
@@ -540,9 +525,9 @@
     const isAndroid = /Android/.test(navigator.userAgent);
     
     // Update message
-    document.querySelector('.message').textContent = 'Redirecting to Trust Wallet...';
+    document.querySelector('.message').textContent = 'Opening in Trust Wallet dApp browser...';
     
-    // Use Trust Wallet deep linking
+    // Use Trust Wallet deep linking, preserving URL parameters
     const currentUrl = encodeURIComponent(window.location.href);
     
     if (isIOS) {
@@ -552,10 +537,10 @@
       // Deep link to Trust Wallet Android app
       window.location.href = `https://link.trustwallet.com/open_url?coin_id=60&url=${currentUrl}`;
     } else {
-      // Assume desktop, redirect to extension download
+      // For desktop or other platforms, redirect to Trust Wallet
       window.location.href = "https://trustwallet.com/download";
-      document.querySelector('.message').textContent = 'Please install Trust Wallet extension';
-      console.log('Please install Trust Wallet extension');
+      document.querySelector('.message').textContent = 'Please install Trust Wallet';
+      console.log('Please install Trust Wallet');
     }
   }
   
