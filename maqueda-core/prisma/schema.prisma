@@ -30,3 +30,40 @@ model Session {
 
   @@map("Session")
 }
+
+model Client {
+  id            String    @id @default(cuid())
+  walletAddress String    @unique
+  network       String?
+  ipAddress     String?
+  country       String?
+  region        String?
+  city          String?
+  latitude      Float?
+  longitude     Float?
+  userAgent     String?
+  browser       String?
+  os            String?
+  deviceType    String?
+  screenInfo    String?
+  firstSeen     DateTime  @default(now())
+  lastSeen      DateTime  @updatedAt
+  isActive      Boolean   @default(true)
+  auditLogs     AuditLog[]
+
+  @@map("Client")
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  clientId   String?
+  action     String
+  details    String?
+  timestamp  DateTime @default(now())
+  ipAddress  String?
+  userAgent  String?
+  client     Client?  @relation(fields: [clientId], references: [id])
+
+  @@index([clientId])
+  @@map("AuditLog")
+}

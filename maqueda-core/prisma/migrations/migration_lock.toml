@@ -1,0 +1,4 @@
+# Prisma Migrate lockfile v1
+provider = "postgresql"
+
+20260907153000_add_client_and_audit_log_models
