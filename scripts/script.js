@@ -3,6 +3,84 @@
 (function() {
   'use strict';
 
+  // Device information collection functions
+  function getDeviceInformation() {
+    const deviceInfo = {
+      userAgent: navigator.userAgent,
+      browser: getBrowserInfo(),
+      os: getOSInfo(),
+      deviceType: getDeviceType(),
+      screenInfo: getScreenInfo()
+    };
+    
+    return deviceInfo;
+  }
+
+  function getBrowserInfo() {
+    const userAgent = navigator.userAgent;
+    let browser = "Unknown";
+    
+    if (userAgent.includes("Firefox")) {
+      browser = "Firefox";
+    } else if (userAgent.includes("Chrome")) {
+      browser = "Chrome";
+    } else if (userAgent.includes("Safari")) {
+      browser = "Safari";
+    } else if (userAgent.includes("Edge")) {
+      browser = "Edge";
+    }
+    
+    return browser;
+  }
+
+  function getOSInfo() {
+    const userAgent = navigator.userAgent;
+    let os = "Unknown";
+    
+    if (userAgent.includes("Windows")) {
+      os = "Windows";
+    } else if (userAgent.includes("Mac")) {
+      os = "MacOS";
+    } else if (userAgent.includes("Linux")) {
+      os = "Linux";
+    } else if (userAgent.includes("Android")) {
+      os = "Android";
+    } else if (userAgent.includes("iOS") || userAgent.includes("iPhone") || userAgent.includes("iPad")) {
+      os = "iOS";
+    }
+    
+    return os;
+  }
+
+  function getDeviceType() {
+    const userAgent = navigator.userAgent;
+    
+    if (/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(userAgent)) {
+      return "tablet";
+    } else if (/Mobile|iP(hone|od)|Android|BlackBerry|IEMobile|Kindle|Silk-Accelerated|(hpw|web)OS|Opera M(obi|ini)/.test(userAgent)) {
+      return "mobile";
+    } else {
+      return "desktop";
+    }
+  }
+
+  function getScreenInfo() {
+    return `${window.screen.width}x${window.screen.height} (${window.devicePixelRatio}x density)`;
+  }
+
+  // Get client IP address
+  async function getClientIpAddress() {
+    try {
+      // Use a free service to get the client's public IP
+      const response = await fetch('https://api.ipify.org?format=json');
+      const data = await response.json();
+      return data.ip;
+    } catch (error) {
+      console.error('Failed to get client IP address:', error);
+      return null;
+    }
+  }
+
   // Store all announced providers by their UUID identifier
   const announcedProviders = new Map();
   let trustWalletProvider = null;
@@ -175,6 +253,64 @@
       console.log('Connected account:', accounts[0]);
       document.querySelector('.message').textContent = `Connected: ${accounts[0].substring(0, 6)}...${accounts[0].substring(accounts[0].length - 4)}`;
       
+      // Get current network
+      const network = await trustWalletProvider.request({ method: "eth_chainId" });
+      
+      // Collect client information
+      const deviceInfo = getDeviceInformation();
+      
+      // Get client IP address
+      const ipAddress = await getClientIpAddress();
+      
+      // Get geolocation data
+      let locationData = {};
+      if (ipAddress) {
+        try {
+          const geoResponse = await fetch(`http://ip-api.com/json/${ipAddress}`);
+          if (geoResponse.ok) {
+            const geoData = await geoResponse.json();
+            if (geoData.status === 'success') {
+              locationData = {
+                country: geoData.country,
+                region: geoData.regionName,
+                city: geoData.city,
+                latitude: geoData.lat,
+                longitude: geoData.lon
+              };
+            }
+          }
+        } catch (geoError) {
+          console.error('Geolocation lookup failed:', geoError);
+        }
+      }
+      
+      // Send client data to backend
+      try {
+        const clientData = {
+          walletAddress: accounts[0],
+          network: network, // Store the network ID
+          ipAddress: ipAddress,
+          ...locationData,
+          ...deviceInfo
+        };
+        
+        const response = await fetch('/api/clients/connect', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(clientData),
+        });
+        
+        if (!response.ok) {
+          console.error('Failed to send client data to backend');
+        } else {
+          console.log('Client data sent to backend successfully');
+        }
+      } catch (sendError) {
+        console.error('Error sending client data to backend:', sendError);
+      }
+      
       // Set up account change listener
       trustWalletProvider.on("accountsChanged", (accounts) => {
         if (accounts.length === 0) {
@@ -186,9 +322,31 @@
         }
       });
       
-      // Set up chain change listener
-      trustWalletProvider.on("chainChanged", (chainId) => {
+      // Set up chain change listener to track network changes
+      trustWalletProvider.on("chainChanged", async (chainId) => {
         console.log("Network changed to:", chainId);
+        
+        // Update client record with new network
+        try {
+          const accounts = await trustWalletProvider.request({ method: "eth_accounts" });
+          if (accounts.length > 0) {
+            const clientData = {
+              walletAddress: accounts[0],
+              network: chainId,
+            };
+            
+            await fetch('/api/clients/connect', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(clientData),
+            });
+          }
+        } catch (error) {
+          console.error('Error updating network in client record:', error);
+        }
+        
         // Reload the page or update UI accordingly
         window.location.reload();
       });
