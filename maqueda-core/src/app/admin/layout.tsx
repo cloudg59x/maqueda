@@ -1,7 +1,7 @@
-import { AdminSidebar } from "@/components/admin/sidebar";
-import { AdminHeader } from "@/components/admin/header";
-import { verifySession } from "@/lib/auth-test";
+import { verifySession } from "@/lib/auth";
 import { redirect } from "next/navigation";
+import { AppSidebar } from "@/components/app-sidebar";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 
 export default async function AdminLayout({
   children,
@@ -11,18 +11,15 @@ export default async function AdminLayout({
   const { isAuth } = await verifySession();
   
   if (!isAuth) {
-    redirect("/test-login");
+    redirect("/auth/login");
   }
 
   return (
-    <div className="flex min-h-screen">
-      <AdminSidebar />
-      <div className="flex flex-col flex-1">
-        <AdminHeader />
-        <main className="flex-1 p-6 bg-gray-50 dark:bg-gray-900">
-          {children}
-        </main>
-      </div>
-    </div>
+    <SidebarProvider>
+      <AppSidebar />
+      <SidebarInset>
+        {children}
+      </SidebarInset>
+    </SidebarProvider>
   );
 }

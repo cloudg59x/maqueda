@@ -36,7 +36,7 @@ export async function createSession(userId: string) {
 
   const token = await encrypt({ sessionId, userId, expiresAt });
 
-  cookies().set('session', token, {
+  (await cookies()).set('session', token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     expires: expiresAt,
@@ -48,7 +48,7 @@ export async function createSession(userId: string) {
 }
 
 export async function verifySession() {
-  const cookie = cookies().get('session')?.value;
+  const cookie = (await cookies()).get('session')?.value;
   if (!cookie) return { isAuth: false };
 
   try {
@@ -71,7 +71,7 @@ export async function verifySession() {
 }
 
 export async function deleteSession() {
-  const cookie = cookies().get('session')?.value;
+  const cookie = (await cookies()).get('session')?.value;
   if (!cookie) return;
 
   try {
@@ -83,5 +83,5 @@ export async function deleteSession() {
     // Ignore errors during session deletion
   }
 
-  cookies().delete('session');
+  (await cookies()).delete('session');
 }
