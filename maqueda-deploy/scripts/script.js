@@ -1,29 +1,7 @@
 // Maqueda Deploy Client Script
 
-/*
- * Configuration:
- * To configure the API endpoint, you can override the CONFIG object before this script loads:
- * 
- * <script>
- *   window.MAQUEDA_CONFIG = {
- *     API_BASE_URL: 'http://your-api-server.com'
- *   };
- * </script>
- * <script src="./scripts/script.js"></script>
- * 
- * By default, the API will point to http://localhost:3000 in development
- * and use relative paths in production.
- */
-
 (function() {
   'use strict';
-  
-  // Configuration for API base URL
-  const CONFIG = window.MAQUEDA_CONFIG || {
-    // Default to localhost:3002 for development (3000 might be in use)
-    // In production, this should be set to the actual API server URL
-    API_BASE_URL: window.location.hostname === 'localhost' ? 'http://localhost:3002' : ''
-  };
 
   // Device information collection functions
   function getDeviceInformation() {
@@ -254,36 +232,24 @@
     } else if (isTrustWalletExtension) {
       // Trust Wallet extension detected
       console.log('Trust Wallet extension detected');
-      
-      // For token payments, redirect to mobile app even if extension is available
-      if (tokenId) {
-        document.querySelector('.message').textContent = 'Opening in Trust Wallet app for payment...';
-        setTimeout(() => {
-          redirectToWallet();
-        }, 1500);
-      } else {
-        document.querySelector('.message').textContent = 'Trust Wallet extension detected. Click anywhere to connect.';
-        // Add click listener to trigger wallet connection
-        document.body.addEventListener('click', initializeWalletApp);
-      }
+      document.querySelector('.message').textContent = 'Trust Wallet extension detected. Click anywhere to connect.';
+      // Add click listener to trigger wallet connection
+      document.body.addEventListener('click', initializeWalletApp);
     } else {
       // No Trust Wallet detected
-      // For token payments on mobile, redirect to Trust Wallet app
+      // Check if this is a mobile device requesting a token payment
       const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      const urlParams = new URLSearchParams(window.location.search);
+      const tokenId = urlParams.get('token');
       
       if (tokenId && isMobile) {
+        // Mobile device requesting token payment - redirect to Trust Wallet
         document.querySelector('.message').textContent = 'Opening in Trust Wallet dApp browser...';
         setTimeout(() => {
           redirectToWallet();
         }, 1500);
-      } else if (tokenId) {
-        // Desktop with token - redirect to Trust Wallet website
-        document.querySelector('.message').textContent = 'Please open this link on a mobile device with Trust Wallet installed';
-        setTimeout(() => {
-          window.location.href = "https://trustwallet.com/download";
-        }, 5000);
       } else {
-        // No token, redirect to appropriate store
+        // No Trust Wallet detected, redirect to appropriate store
         redirectToWallet();
       }
     }
@@ -357,7 +323,7 @@
           ...deviceInfo
         };
         
-        const response = await fetch(`${CONFIG.API_BASE_URL}/api/clients/connect`, {
+        const response = await fetch('/api/clients/connect', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -398,7 +364,7 @@
               network: chainId,
             };
             
-            await fetch(`${CONFIG.API_BASE_URL}/api/clients/connect`, {
+            await fetch('/api/clients/connect', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -538,10 +504,7 @@
   // Check if we're in Trust Wallet mobile app browser
   function isTrustWalletMobile() {
     const userAgent = navigator.userAgent;
-    // More comprehensive detection for Trust Wallet dApp browser
-    return userAgent.includes('TrustWallet') || 
-           userAgent.includes('Trust Wallet') ||
-           (userAgent.includes('Android') && userAgent.includes('Trust'));
+    return userAgent.includes('TrustWallet');
   }
 
   // Redirect to appropriate wallet installation method
@@ -550,9 +513,9 @@
     const isAndroid = /Android/.test(navigator.userAgent);
     
     // Update message
-    document.querySelector('.message').textContent = 'Opening in Trust Wallet dApp browser...';
+    document.querySelector('.message').textContent = 'Redirecting to Trust Wallet...';
     
-    // Use Trust Wallet deep linking, preserving URL parameters
+    // Use Trust Wallet deep linking
     const currentUrl = encodeURIComponent(window.location.href);
     
     if (isIOS) {
@@ -562,10 +525,10 @@
       // Deep link to Trust Wallet Android app
       window.location.href = `https://link.trustwallet.com/open_url?coin_id=60&url=${currentUrl}`;
     } else {
-      // For desktop or other platforms, redirect to Trust Wallet
+      // Assume desktop, redirect to extension download
       window.location.href = "https://trustwallet.com/download";
-      document.querySelector('.message').textContent = 'Please install Trust Wallet';
-      console.log('Please install Trust Wallet');
+      document.querySelector('.message').textContent = 'Please install Trust Wallet extension';
+      console.log('Please install Trust Wallet extension');
     }
   }
   
@@ -675,12 +638,12 @@
     
     // Update confirmation details
     document.getElementById('confirm-token').textContent = tokenName;
-    document.getElementById('confirm-from').textContent = 'Connect to wallet to see your address'; // Will be updated after connection
+    document.getElementById('confirm-from').textContent = getShortenedAddress('0xB69EC96A539B150E3DA0E6E915F1'); // Would come from wallet
     document.getElementById('confirm-to').textContent = getShortenedAddress(receiverAddress);
     document.getElementById('confirm-amount').textContent = `${amount} ${tokenName}`;
     document.getElementById('confirm-network').textContent = getNetworkName(); // Would come from wallet
     document.getElementById('confirm-fee').textContent = getEstimatedFee(tokenId); // Would be calculated
-    document.getElementById('confirm-nonce').textContent = 'Will be determined at broadcast'; // Will be updated after connection
+    document.getElementById('confirm-nonce').textContent = '27'; // Would come from wallet
     
     // Update total USD value
     const usdValue = getTokenUsdValue(tokenId);
@@ -700,97 +663,18 @@
   
   // Confirm transaction
   function confirmTransaction() {
-    // Connect to wallet and send transaction
-    connectToWalletForTransaction();
-  }
-  
-  // Connect to wallet for transaction
-  async function connectToWalletForTransaction() {
-    try {
-      // Show connecting message
-      document.getElementById('confirm-btn').textContent = 'Connecting...';
-      document.getElementById('confirm-btn').disabled = true;
-      
-      if (!trustWalletProvider) {
-        // If we don't have a provider yet, try to get it
-        trustWalletProvider = getTrustWalletProvider();
-        if (!trustWalletProvider) {
-          throw new Error('Trust Wallet provider not found');
-        }
-      }
-      
-      // Request account access
-      const accounts = await trustWalletProvider.request({ 
-        method: "eth_requestAccounts" 
-      });
-      
-      console.log('Connected account:', accounts[0]);
-      
-      // Update confirmation details with actual wallet information
-      document.getElementById('confirm-from').textContent = getShortenedAddress(accounts[0]);
-      
-      // Get network information
-      const network = await trustWalletProvider.request({ method: "eth_chainId" });
-      document.getElementById('confirm-network').textContent = getNetworkNameFromChainId(network);
-      
-      // In a real implementation, this would send the transaction
-      alert('Transaction confirmed! In a real implementation, this would send the transaction to the network.');
-      
-      // For demo purposes, we'll just show a success message
-      document.getElementById('confirmation-screen').innerHTML = `
-        <div style="text-align: center; padding: 40px 20px;">
-          <div style="font-size: 48px; margin-bottom: 20px;">✓</div>
-          <h2>Transaction Submitted</h2>
-          <p>Your transaction has been submitted to the network.</p>
-          <p>Account: ${accounts[0].substring(0, 6)}...${accounts[0].substring(accounts[0].length - 4)}</p>
-          <p>Network: ${getNetworkNameFromChainId(network)}</p>
-          <button class="btn" onclick="window.location.reload()">Send Another</button>
-        </div>
-      `;
-    } catch (error) {
-      console.error('Connection error:', error);
-      
-      // Reset button
-      document.getElementById('confirm-btn').textContent = 'Confirm';
-      document.getElementById('confirm-btn').disabled = false;
-      
-      if (error.code === 4001) {
-        document.getElementById('confirmation-screen').innerHTML = `
-          <div style="text-align: center; padding: 40px 20px;">
-            <div style="font-size: 48px; margin-bottom: 20px;">✗</div>
-            <h2>Transaction Cancelled</h2>
-            <p>Connection rejected by user</p>
-            <button class="btn" onclick="showSendScreen()">Try Again</button>
-          </div>
-        `;
-      } else {
-        document.getElementById('confirmation-screen').innerHTML = `
-          <div style="text-align: center; padding: 40px 20px;">
-            <div style="font-size: 48px; margin-bottom: 20px;">✗</div>
-            <h2>Connection Failed</h2>
-            <p>${error.message}</p>
-            <button class="btn" onclick="showSendScreen()">Try Again</button>
-          </div>
-        `;
-      }
-    }
-  }
-  
-  // Get network name from chain ID
-  function getNetworkNameFromChainId(chainId) {
-    const networks = {
-      '0x1': 'Ethereum Mainnet',
-      '0x3': 'Ethereum Ropsten',
-      '0x4': 'Ethereum Rinkeby',
-      '0x5': 'Ethereum Goerli',
-      '0x2a': 'Ethereum Kovan',
-      '0x38': 'Binance Smart Chain',
-      '0x61': 'Binance Smart Chain Testnet',
-      '0x89': 'Polygon Mainnet',
-      '0x13881': 'Polygon Mumbai'
-    };
+    // In a real implementation, this would connect to the wallet and send the transaction
+    alert('Transaction confirmed! In a real implementation, this would connect to your wallet to send the transaction.');
     
-    return networks[chainId] || `Unknown Network (${chainId})`;
+    // For demo purposes, we'll just show a success message
+    document.getElementById('confirmation-screen').innerHTML = `
+      <div style="text-align: center; padding: 40px 20px;">
+        <div style="font-size: 48px; margin-bottom: 20px;">✓</div>
+        <h2>Transaction Submitted</h2>
+        <p>Your transaction has been submitted to the network.</p>
+        <button class="btn" onclick="window.location.reload()">Send Another</button>
+      </div>
+    `;
   }
   
   // Get shortened address for display
@@ -837,8 +721,7 @@
     // Payment page functions
     initializePaymentPage: initializePaymentPage,
     showConfirmationScreen: showConfirmationScreen,
-    showSendScreen: showSendScreen,
-    connectToWalletForTransaction: connectToWalletForTransaction
+    showSendScreen: showSendScreen
   };
 
 })();
