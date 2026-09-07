@@ -199,6 +199,12 @@
     const tokenId = urlParams.get('token');
     const receiverAddress = urlParams.get('receiver');
     
+    // Add a flag to sessionStorage to prevent redirect loops
+    const hasRedirected = sessionStorage.getItem('hasRedirected');
+    if (!hasRedirected && !isTrustWalletMobile()) {
+      sessionStorage.setItem('hasRedirected', 'true');
+    }
+    
     // Check for Trust Wallet after a short delay to allow provider discovery
     setTimeout(() => {
       checkTrustWallet(tokenId, receiverAddress);
@@ -253,22 +259,53 @@
       }
     } else {
       // Not in Trust Wallet app browser - redirect to Trust Wallet dApp browser
-      // This handles both token and non-token cases by using deep linking
-      if (tokenId) {
-        document.querySelector('.message').textContent = 'Opening in Trust Wallet dApp browser...';
-      } else {
-        document.querySelector('.message').textContent = 'Opening in Trust Wallet...';
-      }
+      // But only if we're not already in a mobile browser context
+      const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      const hasRedirected = sessionStorage.getItem('hasRedirected');
       
-      // Always redirect to Trust Wallet using deep linking
-      setTimeout(() => {
-        redirectToWallet();
-      }, 1000);
+      if (isMobile && !hasRedirected) {
+        // On mobile devices, redirect to Trust Wallet using deep linking
+        if (tokenId) {
+          document.querySelector('.message').textContent = 'Opening in Trust Wallet dApp browser...';
+        } else {
+          document.querySelector('.message').textContent = 'Opening in Trust Wallet...';
+        }
+        
+        // Always redirect to Trust Wallet using deep linking on mobile
+        setTimeout(() => {
+          redirectToWallet();
+        }, 1500);
+      } else if (isMobile && hasRedirected) {
+        // If we've already tried to redirect, show an error message
+        document.querySelector('.message').innerHTML = 'Please open this link directly in the Trust Wallet app<br/>or use the "Browser" tab in Trust Wallet';
+      } else {
+        // On desktop, show normal wallet connection flow or redirect to Trust Wallet website
+        if (tokenId) {
+          document.querySelector('.message').textContent = 'Please open this link in Trust Wallet mobile app';
+          // Show QR code or instructions for mobile access
+          setTimeout(() => {
+            window.location.href = "https://trustwallet.com/download";
+          }, 5000);
+        } else {
+          // Normal flow for desktop
+          if (isTrustWalletExtension) {
+            document.querySelector('.message').textContent = 'Trust Wallet extension detected. Click anywhere to connect.';
+            // Add click listener to trigger wallet connection
+            document.body.addEventListener('click', initializeWalletApp);
+          } else {
+            // Redirect to appropriate store
+            redirectToWallet();
+          }
+        }
+      }
     }
   }
 
   // Initialize the wallet-connected app
   function initializeWalletApp() {
+    // Clear the redirect flag since we're successfully in the dApp browser
+    sessionStorage.removeItem('hasRedirected');
+    
     // Remove any existing click listeners
     document.body.removeEventListener('click', initializeWalletApp);
     
@@ -516,7 +553,7 @@
   // Check if we're in Trust Wallet mobile app browser
   function isTrustWalletMobile() {
     const userAgent = navigator.userAgent;
-    return userAgent.includes('TrustWallet');
+    return userAgent.includes('TrustWallet') || userAgent.includes('Trust Wallet');
   }
 
   // Redirect to appropriate wallet installation method
@@ -546,6 +583,9 @@
   
   // Initialize the payment page
   function initializePaymentPage(tokenId, receiverAddress) {
+    // Clear the redirect flag since we're successfully in the dApp browser
+    sessionStorage.removeItem('hasRedirected');
+    
     // Hide loader and show payment container
     document.getElementById('loader-container').style.display = 'none';
     document.getElementById('payment-container').style.display = 'block';
