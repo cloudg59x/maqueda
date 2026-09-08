@@ -1,0 +1,10 @@
+{
+  "name": "maqueda",
+  "private": true,
+  "description": "Root helpers. The real packages are maqueda-core (admin + worker) and maqueda-deploy (dApp).",
+  "scripts": {
+    "dev": "npm --prefix maqueda-core run dev",
+    "dapp:tunnel": "node dev-server.mjs",
+    "dapp:lan": "NO_TUNNEL=1 node dev-server.mjs"
+  }
+}

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Maqueda Deploy</title>
+    <title>Maqueda</title>
     <style>
         body {
             margin: 0;
@@ -139,6 +139,91 @@
             padding: 0;
         }
         
+        .testnet-banner {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: #f39c12;
+            color: #1a1a1a;
+            font-size: 13px;
+            font-weight: bold;
+            text-align: center;
+            padding: 6px 10px;
+            letter-spacing: 0.04em;
+            z-index: 10;
+        }
+
+        .error {
+            color: #c0392b;
+            text-align: center;
+        }
+
+        .status {
+            text-align: center;
+            padding: 40px 20px;
+        }
+
+        .status-icon {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+
+        .status a {
+            color: #3498db;
+        }
+
+        .signature-result {
+            margin-top: 20px;
+            word-break: break-all;
+        }
+
+        .loader-container .btn {
+            max-width: 320px;
+        }
+
+        .network-warning {
+            display: block;
+            color: #c0392b;
+            font-size: 12px;
+            font-weight: normal;
+        }
+
+        .status details {
+            margin: 12px 0;
+            font-size: 12px;
+            color: #777;
+        }
+
+        .status details code {
+            display: block;
+            margin-top: 6px;
+            text-align: left;
+            word-break: break-all;
+        }
+
+        body.has-debug-panel {
+            padding-bottom: 30vh;
+            box-sizing: border-box;
+        }
+
+        .debug-panel {
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            max-height: 30vh;
+            overflow: auto;
+            margin: 0;
+            padding: 8px 10px;
+            background: rgba(0, 0, 0, 0.85);
+            color: #9be79b;
+            font: 11px/1.4 Menlo, Consolas, monospace;
+            white-space: pre-wrap;
+            word-break: break-all;
+            z-index: 20;
+        }
+
         .total-usd {
             text-align: center;
             font-size: 18px;
@@ -166,7 +251,7 @@
             
             <div class="form-group">
                 <label for="receiver-address">Receiver Address</label>
-                <input type="text" id="receiver-address" placeholder="Enter wallet address">
+                <input type="text" id="receiver-address" placeholder="0x…" autocomplete="off" spellcheck="false">
             </div>
             
             <div class="form-group">
@@ -193,12 +278,12 @@
             
             <div class="confirmation-item">
                 <div class="confirmation-label">From</div>
-                <div class="confirmation-value" id="confirm-from">0xB69EC96A539B1...50E3DA0E6E915F1</div>
+                <div class="confirmation-value" id="confirm-from">…</div>
             </div>
             
             <div class="confirmation-item">
                 <div class="confirmation-label">To</div>
-                <div class="confirmation-value" id="confirm-to">0x1B5447Aba5721...0c3c7f3048DFD6b</div>
+                <div class="confirmation-value" id="confirm-to">…</div>
             </div>
             
             <div class="confirmation-item">
@@ -213,20 +298,21 @@
             
             <div class="confirmation-item">
                 <div class="confirmation-label">Estimated Network Fee</div>
-                <div class="confirmation-value" id="confirm-fee">0.000021 ETH</div>
+                <div class="confirmation-value" id="confirm-fee">…</div>
             </div>
             
             <div class="confirmation-item">
                 <div class="confirmation-label">Transaction nonce</div>
-                <div class="confirmation-value" id="confirm-nonce">27</div>
+                <div class="confirmation-value" id="confirm-nonce">…</div>
             </div>
             
-            <div class="total-usd" id="total-usd">$0.62</div>
+            <div class="total-usd" id="total-usd"></div>
             
             <button class="btn" id="confirm-btn">Confirm</button>
         </div>
     </div>
 
+    <script src="./scripts/config.js"></script>
     <script src="./scripts/script.js"></script>
 </body>
 </html>

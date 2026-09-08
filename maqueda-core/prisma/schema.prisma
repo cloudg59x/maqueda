@@ -1,4 +1,6 @@
-// Define your models here
+// Data model for Maqueda admin + balance monitor.
+// See docs/architecture.md for the narrative version of this file.
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -8,33 +10,43 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ---------------------------------------------------------------------------
+// Admin users & sessions
+// ---------------------------------------------------------------------------
+
 model User {
-  id            String    @id @default(cuid()) @map("id")
-  email         String    @unique @map("email")
-  password      String    @map("password")
-  name          String?   @map("name")
-  role          String    @default("USER") @map("role")
-  createdAt     DateTime  @default(now()) @map("createdAt")
-  updatedAt     DateTime  @updatedAt @map("updatedAt")
-  sessions      Session[]
+  id        String     @id @default(cuid())
+  email     String     @unique
+  password  String
+  name      String?
+  role      String     @default("USER") // USER | ADMIN
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  sessions  Session[]
+  auditLogs AuditLog[]
 
   @@map("User")
 }
 
 model Session {
-  id                 String   @id @default(cuid()) @map("id")
-  userId             String   @map("userId")
-  expiresAt          DateTime @map("expiresAt")
-  createdAt          DateTime @default(now()) @map("createdAt")
-  user               User     @relation(fields: [userId], references: [id])
+  id        String   @id @default(cuid())
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
   @@map("Session")
 }
 
+// ---------------------------------------------------------------------------
+// Connected wallets (clients of the dApp)
+// ---------------------------------------------------------------------------
+
 model Client {
-  id            String    @id @default(cuid())
-  walletAddress String    @unique
-  network       String?
+  id            String   @id @default(cuid())
+  walletAddress String   @unique // checksummed 0x address
+  network       String? // hex chain id reported by the wallet, e.g. 0xaa36a7
   ipAddress     String?
   country       String?
   region        String?
@@ -46,24 +58,124 @@ model Client {
   os            String?
   deviceType    String?
   screenInfo    String?
-  firstSeen     DateTime  @default(now())
-  lastSeen      DateTime  @updatedAt
-  isActive      Boolean   @default(true)
-  auditLogs     AuditLog[]
+  firstSeen     DateTime @default(now())
+  lastSeen      DateTime @updatedAt
+  isActive      Boolean  @default(true)
+
+  // Denormalised by the worker so list views never aggregate snapshots.
+  lastBalanceUsd Decimal?  @db.Decimal(18, 2)
+  belowThreshold Boolean   @default(false)
+  lastCheckedAt  DateTime?
+
+  auditLogs AuditLog[]
+  snapshots BalanceSnapshot[]
+  alerts    Alert[]
 
   @@map("Client")
 }
 
-model AuditLog {
+// ---------------------------------------------------------------------------
+// Monitoring
+// ---------------------------------------------------------------------------
+
+model MonitoredToken {
+  id          String  @id @default(cuid())
+  chainId     String // hex chain id
+  symbol      String
+  name        String
+  address     String? // null = native coin
+  decimals    Int
+  coingeckoId String
+  enabled     Boolean @default(true)
+
+  snapshots BalanceSnapshot[]
+
+  @@unique([chainId, symbol])
+  @@map("MonitoredToken")
+}
+
+// One row per (client, token) each time the raw balance changes.
+model BalanceSnapshot {
   id         String   @id @default(cuid())
+  clientId   String
+  tokenId    String
+  rawBalance Decimal  @db.Decimal(78, 0) // uint256 as exact integer
+  usdValue   Decimal  @db.Decimal(18, 2)
+  takenAt    DateTime @default(now())
+
+  client Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  token  MonitoredToken @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+
+  @@index([clientId, tokenId, takenAt])
+  @@map("BalanceSnapshot")
+}
+
+enum AlertType {
+  BELOW_THRESHOLD
+  BACK_ABOVE
+  BALANCE_CHANGED
+  WORKER_ERROR
+}
+
+model Alert {
+  id         String    @id @default(cuid())
   clientId   String?
-  action     String
-  details    String?
-  timestamp  DateTime @default(now())
-  ipAddress  String?
-  userAgent  String?
-  client     Client?  @relation(fields: [clientId], references: [id])
+  type       AlertType
+  message    String
+  payload    Json?
+  readAt     DateTime?
+  notifiedAt DateTime? // set once Telegram delivery succeeded
+  createdAt  DateTime  @default(now())
+
+  client Client? @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([readAt])
+  @@index([clientId, createdAt])
+  @@map("Alert")
+}
+
+// Key/value app settings editable from Admin -> Settings.
+// Keys: threshold_usd, poll_interval_sec, telegram_bot_token, telegram_chat_id
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("Setting")
+}
+
+// Single-row heartbeat of the worker (id = "monitor").
+model WorkerState {
+  id             String    @id
+  lastRunAt      DateTime?
+  lastDurationMs Int?
+  lastError      String?
+  updatedAt      DateTime  @updatedAt
+
+  @@map("WorkerState")
+}
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+// Every admin action and every worker/dApp event lands here.
+// actor: "user:<id>" | "worker" | "dapp"
+model AuditLog {
+  id        String   @id @default(cuid())
+  actor     String   @default("system")
+  userId    String?
+  clientId  String?
+  action    String
+  details   Json?
+  ipAddress String?
+  userAgent String?
+  timestamp DateTime @default(now())
+
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  client Client? @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
   @@index([clientId])
+  @@index([timestamp])
   @@map("AuditLog")
 }

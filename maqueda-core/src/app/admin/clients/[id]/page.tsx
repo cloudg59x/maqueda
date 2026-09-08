@@ -1,206 +1,128 @@
-import { notFound } from 'next/navigation';
+import { notFound } from "next/navigation";
+import { MonitorIcon, SmartphoneIcon, TabletIcon } from "lucide-react";
+import { getClientAuditLog, getClientBalanceHistory, getClientDetail } from "@/actions/client-actions";
+import { getAlerts } from "@/actions/alert-actions";
+import { AutoRefresh } from "@/components/auto-refresh";
+import { AlertsTable } from "@/components/alerts/alerts-table";
+import { AuditLogTable } from "@/components/audit-log-table";
+import { BalanceHistoryChart } from "@/components/clients/balance-history-chart";
+import { ClientActionsMenu } from "@/components/clients/client-actions-menu";
+import { ClientStatusBadge, clientStatus } from "@/components/clients/client-status-badge";
+import { WalletAddress } from "@/components/clients/wallet-address";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
-import { getClientById } from "@/actions/client-actions";
-import { getNetworkName } from "@/lib/networks";
-import { 
-  CalendarIcon, 
-  GlobeIcon, 
-  MonitorIcon, 
-  SmartphoneIcon, 
-  TabletIcon,
-  ActivityIcon,
-  WifiIcon,
-  MapPinIcon,
-  InfoIcon
-} from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { getChainName } from "@/lib/chains";
+import { formatDateTime, timeAgo } from "@/lib/format";
+import { formatTokenAmount, formatUsd } from "@/lib/tokens";
 
-export default async function ClientDetailPage({ params }: { params: { id: string } }) {
-  const { success, data: client } = await getClientById(params.id);
-  
-  if (!success || !client) {
-    notFound();
-  }
+export const dynamic = "force-dynamic";
 
-  // Helper function to format device type icons
-  const getDeviceTypeIcon = (deviceType: string) => {
-    switch (deviceType?.toLowerCase()) {
-      case 'mobile':
-        return <SmartphoneIcon className="w-4 h-4" />;
-      case 'tablet':
-        return <TabletIcon className="w-4 h-4" />;
-      default:
-        return <MonitorIcon className="w-4 h-4" />;
-    }
-  };
+export default async function ClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const client = await getClientDetail(id);
+  if (!client) notFound();
+  const [history, alerts, auditLog] = await Promise.all([
+    getClientBalanceHistory(id),
+    getAlerts({ clientId: id, limit: 100 }),
+    getClientAuditLog(id),
+  ]);
+  const DeviceIcon = client.deviceType === "mobile" ? SmartphoneIcon : client.deviceType === "tablet" ? TabletIcon : MonitorIcon;
 
   return (
-    <div className="flex flex-1 flex-col gap-4 p-4 md:gap-6 md:p-6">
-      <div className="space-y-6">
-        <div className="flex justify-between items-center">
-          <div>
-            <h2 className="text-2xl font-bold tracking-tight">Client Details</h2>
-            <p className="text-muted-foreground">
-              Detailed information about connected wallet client
-            </p>
+    <TooltipProvider>
+      <AutoRefresh seconds={30} />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight">Client</h1>
+            <ClientStatusBadge status={clientStatus(client)} />
           </div>
-          <div>
-            <Badge variant={client.isActive ? 'default' : 'secondary'}>
-              <ActivityIcon className="w-3 h-3 mr-1" />
-              {client.isActive ? 'Active' : 'Inactive'}
-            </Badge>
-          </div>
+          <WalletAddress address={client.walletAddress} chainId={client.network} full className="text-base" />
+          <p className="text-sm text-muted-foreground">
+            {getChainName(client.network)} · first seen {formatDateTime(client.firstSeen)} · last seen {timeAgo(client.lastSeen)}
+          </p>
         </div>
-
-        {/* Client Information Card */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Client Information</CardTitle>
-            <CardDescription>
-              Basic information about this connected wallet
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <WifiIcon className="w-4 h-4 text-muted-foreground" />
-                  <span className="font-medium">Wallet Address:</span>
-                </div>
-                <div className="font-mono text-sm bg-muted p-2 rounded">
-                  {client.walletAddress}
-                </div>
-              </div>
-              
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <GlobeIcon className="w-4 h-4 text-muted-foreground" />
-                  <span className="font-medium">Network:</span>
-                </div>
-                <div>
-                  {client.network ? getNetworkName(client.network) : 'Unknown'}
-                </div>
-              </div>
-              
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <MapPinIcon className="w-4 h-4 text-muted-foreground" />
-                  <span className="font-medium">Location:</span>
-                </div>
-                <div>
-                  {client.city ? `${client.city}, ${client.region}, ${client.country}` : 
-                   client.country ? `${client.country}` : 'Unknown'}
-                </div>
-                <div className="text-sm text-muted-foreground">
-                  {client.latitude && client.longitude ? 
-                    `(${client.latitude}, ${client.longitude})` : ''}
-                </div>
-              </div>
-              
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <CalendarIcon className="w-4 h-4 text-muted-foreground" />
-                  <span className="font-medium">First Seen:</span>
-                </div>
-                <div>
-                  {new Date(client.firstSeen).toLocaleString()}
-                </div>
-              </div>
-              
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <CalendarIcon className="w-4 h-4 text-muted-foreground" />
-                  <span className="font-medium">Last Seen:</span>
-                </div>
-                <div>
-                  {new Date(client.lastSeen).toLocaleString()}
-                </div>
-              </div>
-              
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <MonitorIcon className="w-4 h-4 text-muted-foreground" />
-                  <span className="font-medium">Device:</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  {getDeviceTypeIcon(client.deviceType || '')}
-                  <span>{client.os} / {client.browser}</span>
-                </div>
-              </div>
-              
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <InfoIcon className="w-4 h-4 text-muted-foreground" />
-                  <span className="font-medium">User Agent:</span>
-                </div>
-                <div className="text-sm bg-muted p-2 rounded max-h-20 overflow-y-auto">
-                  {client.userAgent || 'Not available'}
-                </div>
-              </div>
-              
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <InfoIcon className="w-4 h-4 text-muted-foreground" />
-                  <span className="font-medium">Screen Info:</span>
-                </div>
-                <div>
-                  {client.screenInfo || 'Not available'}
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Audit Logs Card */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Audit Logs</CardTitle>
-            <CardDescription>
-              Activity history for this client
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Action</TableHead>
-                  <TableHead>Timestamp</TableHead>
-                  <TableHead>IP Address</TableHead>
-                  <TableHead>Details</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {client.auditLogs && client.auditLogs.length > 0 ? (
-                  client.auditLogs.map((log) => (
-                    <TableRow key={log.id}>
-                      <TableCell>
-                        <Badge variant="outline">{log.action}</Badge>
-                      </TableCell>
-                      <TableCell>
-                        {new Date(log.timestamp).toLocaleString()}
-                      </TableCell>
-                      <TableCell>
-                        {log.ipAddress || 'Unknown'}
-                      </TableCell>
-                      <TableCell>
-                        {log.details ? JSON.parse(log.details).network || 'N/A' : 'N/A'}
-                      </TableCell>
-                    </TableRow>
-                  ))
-                ) : (
-                  <TableRow>
-                    <TableCell colSpan={4} className="text-center py-8 text-muted-foreground">
-                      No audit logs found for this client
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+        <ClientActionsMenu client={client} variant="buttons" />
       </div>
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>Total value</CardDescription>
+            <CardTitle className="text-2xl tabular-nums">{client.lastCheckedAt ? formatUsd(client.lastBalanceUsd) : "pending"}</CardTitle>
+          </CardHeader>
+          <CardContent className="text-xs text-muted-foreground">checked {timeAgo(client.lastCheckedAt)}</CardContent>
+        </Card>
+        {client.balances.map((b) => (
+          <Card key={b.tokenId}>
+            <CardHeader className="pb-2">
+              <CardDescription>{b.symbol}</CardDescription>
+              <CardTitle className="text-2xl tabular-nums">{b.takenAt ? formatTokenAmount(b.raw, b.decimals, b.symbol === "ETH" ? 6 : 2) : "—"}</CardTitle>
+            </CardHeader>
+            <CardContent className="text-xs text-muted-foreground">{b.takenAt ? `${formatUsd(b.usd)} · changed ${timeAgo(b.takenAt)}` : "no snapshot yet"}</CardContent>
+          </Card>
+        ))}
+      </div>
+
+      <Tabs defaultValue="balances" className="w-full">
+        <TabsList>
+          <TabsTrigger value="balances">Balances</TabsTrigger>
+          <TabsTrigger value="alerts">Alerts {alerts.length > 0 && <span className="ml-1 text-muted-foreground">({alerts.length})</span>}</TabsTrigger>
+          <TabsTrigger value="audit">Audit log</TabsTrigger>
+          <TabsTrigger value="device">Device &amp; location</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="balances">
+          <Card>
+            <CardHeader>
+              <CardTitle>Total USD, last 30 days</CardTitle>
+              <CardDescription>Step chart built from balance snapshots. A point is recorded only when a balance changes.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <BalanceHistoryChart points={history} />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="alerts">
+          <AlertsTable alerts={alerts} showClient={false} />
+        </TabsContent>
+
+        <TabsContent value="audit">
+          <AuditLogTable rows={auditLog} />
+        </TabsContent>
+
+        <TabsContent value="device">
+          <Card>
+            <CardContent className="grid gap-x-8 gap-y-4 pt-6 sm:grid-cols-2">
+              <Field label="Device">
+                <span className="inline-flex items-center gap-2">
+                  <DeviceIcon className="size-4 text-muted-foreground" />
+                  {[client.deviceType, client.os, client.browser].filter(Boolean).join(" · ") || "Unknown"}
+                </span>
+              </Field>
+              <Field label="Screen">{client.screenInfo ?? "—"}</Field>
+              <Field label="Location">{[client.city, client.region, client.country].filter(Boolean).join(", ") || "Unknown"}</Field>
+              <Field label="Coordinates">{client.latitude != null && client.longitude != null ? `${client.latitude}, ${client.longitude}` : "—"}</Field>
+              <Field label="IP address">{client.ipAddress ?? "—"}</Field>
+              <Field label="Chain reported by wallet">{getChainName(client.network)}</Field>
+              <Field label="User agent" className="sm:col-span-2">
+                <span className="break-all font-mono text-xs">{client.userAgent ?? "—"}</span>
+              </Field>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+    </TooltipProvider>
+  );
+}
+
+function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
+  return (
+    <div className={className}>
+      <div className="text-xs uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-1 text-sm">{children}</div>
     </div>
   );
 }

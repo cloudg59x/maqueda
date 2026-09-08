@@ -1,869 +1,805 @@
-// Maqueda Deploy Client Script
+/**
+ * Maqueda dApp. Runs inside the Trust Wallet dApp browser (or with the Trust Wallet extension).
+ *
+ * Flows (unchanged from the previous version, see README.md):
+ *   - no ?token          connect wallet, report it to the admin API, show the signing demo
+ *   - ?token=eth|usdc    payment page: amount -> confirmation -> eth_sendTransaction
+ *   - not in Trust Wallet deep-link into the app (mobile) or send to the download page (desktop)
+ *
+ * Configuration lives in config.js (window.MAQUEDA_CONFIG). No build step, no dependencies.
+ */
+(function () {
+  "use strict";
 
-// Configuration
-const MAQUEDA_CONFIG = {
-  // Default API server address
-  API_BASE_URL: 'http://localhost:3000'
-};
+  // ---------------------------------------------------------------------------
+  // Config & chain helpers
+  // ---------------------------------------------------------------------------
 
-(function() {
-  'use strict';
+  const CONFIG = window.MAQUEDA_CONFIG || {};
+  const PARAMS = new URLSearchParams(window.location.search);
+  const API_BASE_URL = (PARAMS.get("api") || CONFIG.API_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
+  const CHAIN_KEY = (PARAMS.get("chain") || CONFIG.CHAIN || "mainnet").toLowerCase();
+  const CHAIN = (CONFIG.CHAINS && CONFIG.CHAINS[CHAIN_KEY]) || (CONFIG.CHAINS && CONFIG.CHAINS.mainnet) || null;
 
-  // Device information collection functions
+  const DEBUG = PARAMS.get("debug") === "1";
+
+  // Phones have no console: with ?debug=1 every log line is also appended to an on-page panel.
+  function debugPanel(level, args) {
+    if (!DEBUG || !document.body) return;
+    let panel = document.getElementById("debug-panel");
+    if (!panel) {
+      panel = document.createElement("pre");
+      panel.id = "debug-panel";
+      panel.className = "debug-panel";
+      document.body.classList.add("has-debug-panel");
+      document.body.appendChild(panel);
+    }
+    const text = args.map((a) => (typeof a === "string" ? a : serialize(a))).join(" ");
+    panel.textContent += `${new Date().toISOString().slice(11, 19)} ${level} ${text}\n`;
+    const lines = panel.textContent.split("\n");
+    if (lines.length > 60) panel.textContent = lines.slice(-60).join("\n");
+    panel.scrollTop = panel.scrollHeight;
+  }
+
+  /** Compact JSON. Wallet errors hide code/message behind non-enumerable fields, so they are picked explicitly. */
+  function serialize(value) {
+    if (value instanceof Error) {
+      const picked = { name: value.name, code: value.code, message: value.message, data: value.data };
+      return JSON.stringify(picked, (k, v) => (v === undefined ? undefined : v));
+    }
+    if (value && typeof value === "object") {
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return String(value);
+      }
+    }
+    return String(value);
+  }
+
+  const log = (...args) => { console.log("[maqueda]", ...args); debugPanel("LOG", args); };
+  const warn = (...args) => { console.warn("[maqueda]", ...args); debugPanel("WARN", args); };
+  const err = (...args) => { console.error("[maqueda]", ...args); debugPanel("ERROR", args); };
+
+  /**
+   * Wallets disagree on the chain id format: hex string ("0xaa36a7"), decimal string ("11155111") or a plain
+   * number (Trust Wallet mobile). Everything goes through here and comes out as lowercase hex, or null.
+   */
+  function normalizeChainId(value) {
+    if (value === null || value === undefined || value === "") return null;
+    if (typeof value === "number" || typeof value === "bigint") return `0x${BigInt(value).toString(16)}`;
+    const str = String(value).trim().toLowerCase();
+    if (/^0x[0-9a-f]+$/.test(str)) return str;
+    if (/^\d+$/.test(str)) return `0x${BigInt(str).toString(16)}`;
+    return null;
+  }
+
+  function chainName(chainId) {
+    const id = normalizeChainId(chainId);
+    if (!CONFIG.CHAINS) return id || "Unknown";
+    const found = Object.values(CONFIG.CHAINS).find((c) => c.chainId.toLowerCase() === id);
+    return found ? found.name : `Unknown (${chainId})`;
+  }
+
+  function tokenInfo(tokenId) {
+    const id = String(tokenId || "").toLowerCase();
+    if (!CHAIN) return null;
+    if (id === CHAIN.nativeSymbol.toLowerCase()) return { id, symbol: CHAIN.nativeSymbol, decimals: 18, address: null, coingeckoId: "ethereum", native: true };
+    const t = CHAIN.tokens && CHAIN.tokens[id];
+    if (!t) return null;
+    return { id, symbol: id.toUpperCase(), decimals: t.decimals, address: t.address, coingeckoId: t.coingeckoId, native: false };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Small utilities
+  // ---------------------------------------------------------------------------
+
+  const $ = (id) => document.getElementById(id);
+  const setMessage = (html, asHtml = false) => {
+    const el = document.querySelector(".message");
+    if (!el) return;
+    if (asHtml) el.innerHTML = html;
+    else el.textContent = html;
+  };
+
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  }
+
+  function shortAddress(address, head = 6, tail = 4) {
+    if (!address || address.length < head + tail + 2) return address || "";
+    return `${address.slice(0, head)}…${address.slice(-tail)}`;
+  }
+
+  function isHexAddress(value) {
+    return /^0x[0-9a-fA-F]{40}$/.test(String(value || "").trim());
+  }
+
+  function utf8ToHex(text) {
+    const bytes = new TextEncoder().encode(text);
+    return "0x" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  /** "1.5" with 6 decimals -> 1500000n. Exact, no floats. */
+  function parseUnits(amount, decimals) {
+    const [intPart, fracPart = ""] = String(amount).trim().split(".");
+    if (!/^\d*$/.test(intPart) || !/^\d*$/.test(fracPart)) throw new Error("Invalid amount");
+    const frac = (fracPart + "0".repeat(decimals)).slice(0, decimals);
+    return BigInt(intPart || "0") * 10n ** BigInt(decimals) + BigInt(frac || "0");
+  }
+
+  function toHex(value) {
+    return "0x" + BigInt(value).toString(16);
+  }
+
+  function formatUnits(raw, decimals, maxFraction = 6) {
+    const s = BigInt(raw).toString().padStart(decimals + 1, "0");
+    const int = s.slice(0, s.length - decimals);
+    const frac = s.slice(s.length - decimals).slice(0, maxFraction).replace(/0+$/, "");
+    return frac ? `${int}.${frac}` : int;
+  }
+
+  /** ABI-encode ERC-20 transfer(address,uint256). */
+  function encodeErc20Transfer(to, rawAmount) {
+    const selector = "a9059cbb";
+    const addr = to.toLowerCase().replace(/^0x/, "").padStart(64, "0");
+    const amt = BigInt(rawAmount).toString(16).padStart(64, "0");
+    return "0x" + selector + addr + amt;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Device information
+  // ---------------------------------------------------------------------------
+
+  function getBrowserInfo() {
+    const ua = navigator.userAgent;
+    if (ua.includes("Firefox")) return "Firefox";
+    if (ua.includes("Edg")) return "Edge";
+    if (ua.includes("Chrome")) return "Chrome";
+    if (ua.includes("Safari")) return "Safari";
+    return "Unknown";
+  }
+
+  function getOSInfo() {
+    const ua = navigator.userAgent;
+    if (/iPhone|iPad|iPod/.test(ua)) return "iOS";
+    if (ua.includes("Android")) return "Android";
+    if (ua.includes("Windows")) return "Windows";
+    if (ua.includes("Mac")) return "MacOS";
+    if (ua.includes("Linux")) return "Linux";
+    return "Unknown";
+  }
+
+  function getDeviceType() {
+    const ua = navigator.userAgent;
+    if (/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(ua)) return "tablet";
+    if (/Mobile|iP(hone|od)|Android|BlackBerry|IEMobile|Kindle|Silk-Accelerated|(hpw|web)OS|Opera M(obi|ini)/.test(ua)) return "mobile";
+    return "desktop";
+  }
+
   function getDeviceInformation() {
-    const deviceInfo = {
+    return {
       userAgent: navigator.userAgent,
       browser: getBrowserInfo(),
       os: getOSInfo(),
       deviceType: getDeviceType(),
-      screenInfo: getScreenInfo()
+      screenInfo: `${window.screen.width}x${window.screen.height} (${window.devicePixelRatio}x density)`,
     };
-    
-    return deviceInfo;
   }
 
-  function getBrowserInfo() {
-    const userAgent = navigator.userAgent;
-    let browser = "Unknown";
-    
-    if (userAgent.includes("Firefox")) {
-      browser = "Firefox";
-    } else if (userAgent.includes("Chrome")) {
-      browser = "Chrome";
-    } else if (userAgent.includes("Safari")) {
-      browser = "Safari";
-    } else if (userAgent.includes("Edge")) {
-      browser = "Edge";
-    }
-    
-    return browser;
+  function isMobileDevice() {
+    // User agent only: window width or touch support would flag narrow desktop windows and touch laptops.
+    return /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
   }
 
-  function getOSInfo() {
-    const userAgent = navigator.userAgent;
-    let os = "Unknown";
-    
-    if (userAgent.includes("Windows")) {
-      os = "Windows";
-    } else if (userAgent.includes("Mac")) {
-      os = "MacOS";
-    } else if (userAgent.includes("Linux")) {
-      os = "Linux";
-    } else if (userAgent.includes("Android")) {
-      os = "Android";
-    } else if (userAgent.includes("iOS") || userAgent.includes("iPhone") || userAgent.includes("iPad")) {
-      os = "iOS";
-    }
-    
-    return os;
+  function isTrustWalletMobile() {
+    return navigator.userAgent.includes("TrustWallet");
   }
 
-  function getDeviceType() {
-    const userAgent = navigator.userAgent;
-    
-    if (/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(userAgent)) {
-      return "tablet";
-    } else if (/Mobile|iP(hone|od)|Android|BlackBerry|IEMobile|Kindle|Silk-Accelerated|(hpw|web)OS|Opera M(obi|ini)/.test(userAgent)) {
-      return "mobile";
-    } else {
-      return "desktop";
-    }
-  }
-
-  function getScreenInfo() {
-    return `${window.screen.width}x${window.screen.height} (${window.devicePixelRatio}x density)`;
-  }
-
-  // Get client IP address
-  async function getClientIpAddress() {
+  /**
+   * IP + coarse location in one https call (ipapi.co, no key). The old ip-api.com endpoint is http only
+   * and browsers block it from an https page. Fails soft: the admin still gets the IP from the request.
+   */
+  async function getIpAndLocation() {
     try {
-      // Use a free service to get the client's public IP
-      const response = await fetch('https://api.ipify.org?format=json');
-      const data = await response.json();
-      return data.ip;
+      const res = await fetch("https://ipapi.co/json/", { signal: AbortSignal.timeout(6000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const d = await res.json();
+      if (d.error) throw new Error(d.reason || "ipapi error");
+      return {
+        ipAddress: d.ip || null,
+        country: d.country_name || null,
+        region: d.region || null,
+        city: d.city || null,
+        latitude: typeof d.latitude === "number" ? d.latitude : null,
+        longitude: typeof d.longitude === "number" ? d.longitude : null,
+      };
     } catch (error) {
-      console.error('Failed to get client IP address:', error);
+      warn("Geolocation lookup failed:", error.message || error);
+      return {};
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Wallet discovery (EIP-6963 with legacy fallback)
+  // ---------------------------------------------------------------------------
+
+  const announcedProviders = new Map();
+  let provider = null;
+
+  function initializeEIP6963() {
+    window.addEventListener("eip6963:announceProvider", (event) => {
+      const { info, provider: p } = event.detail;
+      if (announcedProviders.has(info.uuid)) return;
+      announcedProviders.set(info.uuid, { info, provider: p });
+      log("Wallet announced:", info.name, info.rdns);
+    });
+    window.dispatchEvent(new Event("eip6963:requestProvider"));
+  }
+
+  function legacyTrustWalletProvider() {
+    const eth = window.ethereum;
+    if (eth) {
+      if (eth.isTrust || eth.isTrustWallet) return eth;
+      if (Array.isArray(eth.providers)) {
+        const p = eth.providers.find((x) => x.isTrust || x.isTrustWallet);
+        if (p) return p;
+      }
+      // Last resort: any injected provider (previous behaviour).
+      return eth;
+    }
+    return window.trustwallet || null;
+  }
+
+  function getTrustWalletProvider() {
+    for (const entry of announcedProviders.values()) {
+      if (entry.info && entry.info.rdns === "com.trustwallet.app") return entry.provider;
+    }
+    return legacyTrustWalletProvider();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Admin API
+  // ---------------------------------------------------------------------------
+
+  async function reportClient(data) {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/clients/connect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) {
+        warn("Admin API rejected client data:", res.status, await res.text().catch(() => ""));
+        return null;
+      }
+      return await res.json();
+    } catch (error) {
+      warn("Admin API unreachable:", error.message || error);
       return null;
     }
   }
 
-  // Store all announced providers by their UUID identifier
-  const announcedProviders = new Map();
-  let trustWalletProvider = null;
+  // ---------------------------------------------------------------------------
+  // Chain helpers on the provider
+  // ---------------------------------------------------------------------------
 
-  // Function to run when the script is loaded
-  function onScriptLoad() {
-    console.log('Maqueda Deploy script loaded successfully');
-    
-    // Initialize EIP-6963 provider discovery
-    initializeEIP6963();
-    
-    // Add your initialization code here
-    initializeApp();
+  async function currentChainId() {
+    const fromRequest = await provider.request({ method: "eth_chainId" }).catch((e) => { warn("eth_chainId failed:", e); return null; });
+    const normalized = normalizeChainId(fromRequest) ?? normalizeChainId(provider.chainId) ?? null;
+    log("eth_chainId raw:", fromRequest, "provider.chainId:", provider.chainId, "->", normalized);
+    return normalized;
   }
 
-  // Initialize EIP-6963 provider discovery
-  function initializeEIP6963() {
-    const onAnnounce = (event) => {
-      const { info, provider } = event.detail;
-      const key = info.uuid;
-      // Avoid duplicates
-      if(announcedProviders.has(key)) return;
+  /**
+   * Ask the wallet to switch to the configured chain; adds it first if unknown. Never throws:
+   * returns { ok: true } or { ok: false, current, reason, raw } so the UI can explain what to do by hand.
+   */
+  async function ensureConfiguredChain() {
+    if (!CHAIN) return { ok: true };
+    const target = CHAIN.chainId.toLowerCase();
+    let current = await currentChainId();
+    if (current === target) return { ok: true };
+    log(`Wallet is on ${current || "unknown chain"}, switching to ${CHAIN.name} (${target})`);
 
-      announcedProviders.set(key, { info, provider });
-      console.log('Wallet announced:', info.name, info.rdns);
-    };
+    const attempts = [];
+    try {
+      await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: CHAIN.chainId }] });
+      attempts.push("switch: ok");
+    } catch (error) {
+      attempts.push(`switch: ${serialize(error)}`);
+      warn("wallet_switchEthereumChain failed:", error);
+      if (error && error.code === 4001) return { ok: false, current, reason: "rejected by user", raw: attempts.join(" | ") };
+      try {
+        await provider.request({
+          method: "wallet_addEthereumChain",
+          params: [{
+            chainId: CHAIN.chainId,
+            chainName: CHAIN.name,
+            nativeCurrency: { name: "Ether", symbol: CHAIN.nativeSymbol, decimals: 18 },
+            rpcUrls: CHAIN.rpcUrls || [],
+            blockExplorerUrls: [CHAIN.explorerUrl],
+          }],
+        });
+        attempts.push("add: ok");
+      } catch (addError) {
+        attempts.push(`add: ${serialize(addError)}`);
+        warn("wallet_addEthereumChain failed:", addError);
+      }
+    }
 
-    // Listen for wallet announcements
-    window.addEventListener("eip6963:announceProvider", onAnnounce);
-
-    // Request all wallets to announce themselves
-    window.dispatchEvent(new Event("eip6963:requestProvider"));
+    // Trust it only if the wallet now reports the target chain.
+    current = await currentChainId();
+    if (current === target) return { ok: true };
+    return { ok: false, current, reason: "the wallet did not switch", raw: attempts.join(" | ") };
   }
 
-  // Legacy detection for wallets that don't support EIP-6963
-  function legacyDetectTrustWallet() {
-    // Check if window.ethereum exists and has Trust Wallet characteristics
-    if (window.ethereum) {
-      // Check if it's Trust Wallet by checking isTrust property or other identifiers
-      if (window.ethereum.isTrust || window.ethereum.isTrustWallet) {
-        return true;
-      }
-      
-      // Check if the provider has Trust Wallet in its name
-      if (window.ethereum.providers) {
-        return window.ethereum.providers.some(p => p.isTrust || p.isTrustWallet);
-      }
-      
-      // Check for Trust Wallet in the constructor name
-      if (window.ethereum.constructor && window.ethereum.constructor.name) {
-        const constructorName = window.ethereum.constructor.name.toLowerCase();
-        if (constructorName.includes('trust')) {
-          return true;
-        }
-      }
-      
-      // Generic check - if window.ethereum exists, it might be Trust Wallet
-      // This is a last resort check
-      return true;
+  function showTestnetBanner() {
+    if (!CHAIN || !CHAIN.isTestnet) return;
+    let banner = $("testnet-banner");
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = "testnet-banner";
+      banner.className = "testnet-banner";
+      document.body.prepend(banner);
     }
-    
-    // Check for legacy Trust Wallet object
-    if (window.trustwallet) {
-      return true;
-    }
-    
-    return false;
+    banner.textContent = `TEST MODE · ${CHAIN.name} · funds have no value`;
   }
 
-  // Get Trust Wallet provider using EIP-6963
-  function getTrustWalletProvider() {
-    // First try EIP-6963 detection
-    for (const entry of announcedProviders.values()) {
-      console.log('Checking provider:', entry.info.name, entry.info.rdns);
-      if (entry.info?.rdns === 'com.trustwallet.app') {
-        return entry.provider;
-      }
-    }
-    
-    // Fallback to legacy detection
-    if (legacyDetectTrustWallet()) {
-      return window.ethereum || window.trustwallet;
-    }
-    
-    return null;
-  }
+  // ---------------------------------------------------------------------------
+  // Routing
+  // ---------------------------------------------------------------------------
 
-  // Main initialization function
   function initializeApp() {
-    console.log('Initializing Maqueda Deploy application...');
-    
-    // Check if we're in the dApp browser and need to show payment page
-    const urlParams = new URLSearchParams(window.location.search);
-    const tokenId = urlParams.get('token');
-    const receiverAddress = urlParams.get('receiver');
-    
-    // Check for Trust Wallet after a short delay to allow provider discovery
-    setTimeout(() => {
-      checkTrustWallet(tokenId, receiverAddress);
-    }, 2000);
+    log("Initializing", { api: API_BASE_URL, chain: CHAIN_KEY });
+    showTestnetBanner();
+    const tokenId = PARAMS.get("token");
+    const receiverAddress = PARAMS.get("receiver");
+    setTimeout(() => route(tokenId, receiverAddress), CONFIG.PROVIDER_DISCOVERY_MS || 2000);
   }
 
-  // Check if Trust Wallet is available
-  function checkTrustWallet(tokenId, receiverAddress) {
-    const isTrustWalletApp = isTrustWalletMobile();
-    trustWalletProvider = getTrustWalletProvider();
-    const isTrustWalletExtension = trustWalletProvider !== null;
-    const isLocalFile = window.location.protocol === 'file:';
-    const isMobile = isMobileDevice();
-    
-    console.log('Trust Wallet Detection Results:', {
-      isTrustWalletApp,
-      isTrustWalletExtension,
-      isMobile,
+  function route(tokenId, receiverAddress) {
+    const inTrustWalletApp = isTrustWalletMobile();
+    provider = getTrustWalletProvider();
+    const hasProvider = provider !== null;
+    const isLocalFile = window.location.protocol === "file:";
+    const mobile = isMobileDevice();
+
+    log("Detection:", {
+      inTrustWalletApp,
+      hasProvider,
+      mobile,
       isLocalFile,
-      announcedProviders: Array.from(announcedProviders.values()).map(p => ({name: p.info.name, rdns: p.info.rdns})),
-      windowEthereum: !!window.ethereum,
-      windowTrustWallet: !!window.trustwallet,
-      legacyDetection: legacyDetectTrustWallet()
+      announced: Array.from(announcedProviders.values()).map((p) => p.info.rdns),
     });
-    
-    // Special handling for local files
+
     if (isLocalFile) {
-      document.querySelector('.message').innerHTML = 'Running locally may prevent wallet detection.<br>Please serve this page via HTTP/HTTPS or check console for detected wallets.';
-      console.warn('Wallet extensions cannot interact with file:// URLs due to browser security restrictions.');
-      console.warn('To properly test wallet detection, serve this page via HTTP/HTTPS (e.g., using Live Server extension or http-server).');
-      
-      // Even if we can't redirect, we can still check if wallets are theoretically available
-      if (window.ethereum || window.trustwallet) {
-        console.log('Wallet objects detected (but may not be functional on file:// URLs)');
-      }
-      
-      // Don't redirect when running locally
+      setMessage("Running locally may prevent wallet detection.<br>Serve this page over http/https.", true);
+      warn("Wallet extensions cannot interact with file:// URLs.");
       return;
     }
-    
-    if (isTrustWalletApp) {
-      // Already in Trust Wallet app browser
-      console.log('Already in Trust Wallet app browser');
-      
-      // Check if we need to show payment page
+
+    if (inTrustWalletApp || (hasProvider && mobile)) {
+      // Trust Wallet dApp browser (by user agent, or mobile + injected provider).
       if (tokenId) {
-        document.querySelector('.message').textContent = 'Loading payment page...';
-        // Initialize the payment page
+        setMessage("Loading payment page…");
         initializePaymentPage(tokenId, receiverAddress);
       } else {
-        document.querySelector('.message').textContent = 'Trust Wallet detected. Loading app...';
-        // Initialize the app with wallet connection
-        initializeWalletApp();
+        setMessage("Trust Wallet detected. Loading app…");
+        startWalletApp();
       }
-    } else if (isTrustWalletExtension && isMobile && tokenId) {
-      // Mobile device with Trust Wallet provider and token parameter - assume dApp browser context
-      console.log('Assuming Trust Wallet dApp browser context (mobile + Trust Wallet provider + token)');
-      document.querySelector('.message').textContent = 'Loading payment page...';
-      // Initialize the payment page directly
-      initializePaymentPage(tokenId, receiverAddress);
-    } else if (isTrustWalletExtension && isMobile) {
-      // Mobile device with Trust Wallet provider but no token - normal app flow
-      console.log('Assuming Trust Wallet dApp browser context (mobile + Trust Wallet provider)');
-      document.querySelector('.message').textContent = 'Trust Wallet detected. Loading app...';
-      // Initialize the app with wallet connection
-      initializeWalletApp();
-    } else if (isTrustWalletExtension) {
-      // Trust Wallet extension detected on desktop
-      console.log('Trust Wallet extension detected on desktop');
-      
-      // For token payments, redirect to mobile app even if extension is available
+      return;
+    }
+
+    if (hasProvider) {
+      // Desktop extension.
       if (tokenId) {
-        document.querySelector('.message').textContent = 'Opening in Trust Wallet app for payment...';
-        setTimeout(() => {
-          redirectToWallet();
-        }, 1500);
+        setMessage("Opening in Trust Wallet app for payment…");
+        setTimeout(redirectToWallet, 1500);
       } else {
-        document.querySelector('.message').textContent = 'Trust Wallet extension detected. Click anywhere to connect.';
-        // Add click listener to trigger wallet connection
-        document.body.addEventListener('click', initializeWalletApp);
+        setMessage("Trust Wallet extension detected. Click anywhere to connect.");
+        document.body.addEventListener("click", startWalletApp);
       }
+      return;
+    }
+
+    // No Trust Wallet at all.
+    if (tokenId && mobile) {
+      setMessage("Opening in Trust Wallet dApp browser…");
+      setTimeout(redirectToWallet, 1500);
+    } else if (tokenId) {
+      setMessage("Please open this link on a mobile device with Trust Wallet installed");
+      setTimeout(() => { window.location.href = "https://trustwallet.com/download"; }, 5000);
     } else {
-      // No Trust Wallet detected
-      // Check if this is a mobile device requesting a token payment
-      if (tokenId && isMobile) {
-        // Mobile device requesting token payment - redirect to Trust Wallet
-        document.querySelector('.message').textContent = 'Opening in Trust Wallet dApp browser...';
-        setTimeout(() => {
-          redirectToWallet();
-        }, 1500);
-      } else if (tokenId) {
-        // Desktop with token - redirect to Trust Wallet website
-        document.querySelector('.message').textContent = 'Please open this link on a mobile device with Trust Wallet installed';
-        setTimeout(() => {
-          window.location.href = "https://trustwallet.com/download";
-        }, 5000);
-      } else {
-        // No token, redirect to appropriate store
-        redirectToWallet();
-      }
+      redirectToWallet();
     }
   }
 
-  // Initialize the wallet-connected app
-  function initializeWalletApp() {
-    // Remove any existing click listeners
-    document.body.removeEventListener('click', initializeWalletApp);
-    
-    // Update UI to show wallet connection options
-    document.querySelector('.message').textContent = 'Connecting to Trust Wallet...';
-    
-    // Connect to wallet
+  function redirectToWallet() {
+    setMessage("Redirecting to Trust Wallet…");
+    if (isMobileDevice()) {
+      const url = encodeURIComponent(window.location.href);
+      window.location.href = `https://link.trustwallet.com/open_url?coin_id=60&url=${url}`;
+    } else {
+      setMessage("Please install Trust Wallet extension");
+      window.location.href = "https://trustwallet.com/download";
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Connect flow (no ?token)
+  // ---------------------------------------------------------------------------
+
+  function startWalletApp() {
+    document.body.removeEventListener("click", startWalletApp);
+    setMessage("Connecting to Trust Wallet…");
     connectToWallet();
   }
 
-  // Connect to Trust Wallet
+  /**
+   * Ask the wallet for accounts and report the wallet to the admin right away, so it shows up in
+   * Admin -> Clients as soon as the user approves the connection popup, whatever happens next.
+   */
+  async function connectAndReport() {
+    if (!provider) throw new Error("Trust Wallet provider not found");
+    const accounts = await provider.request({ method: "eth_requestAccounts" });
+    const account = accounts && accounts[0];
+    if (!account) throw new Error("No accounts found");
+    log("Connected account:", account);
+    const network = await currentChainId();
+    const location = await getIpAndLocation();
+    await reportClient({ walletAddress: account, network, ...location, ...getDeviceInformation() });
+    attachProviderListeners();
+    return { account, network };
+  }
+
   async function connectToWallet() {
     try {
-      if (!trustWalletProvider) {
-        throw new Error('Trust Wallet provider not found');
-      }
-      
-      // Request account access
-      const accounts = await trustWalletProvider.request({ 
-        method: "eth_requestAccounts" 
-      });
-      
-      console.log('Connected account:', accounts[0]);
-      document.querySelector('.message').textContent = `Connected: ${accounts[0].substring(0, 6)}...${accounts[0].substring(accounts[0].length - 4)}`;
-      
-      // Get current network
-      const network = await trustWalletProvider.request({ method: "eth_chainId" });
-      
-      // Collect client information
-      const deviceInfo = getDeviceInformation();
-      
-      // Get client IP address
-      const ipAddress = await getClientIpAddress();
-      
-      // Get geolocation data
-      let locationData = {};
-      if (ipAddress) {
-        try {
-          const geoResponse = await fetch(`http://ip-api.com/json/${ipAddress}`);
-          if (geoResponse.ok) {
-            const geoData = await geoResponse.json();
-            if (geoData.status === 'success') {
-              locationData = {
-                country: geoData.country,
-                region: geoData.regionName,
-                city: geoData.city,
-                latitude: geoData.lat,
-                longitude: geoData.lon
-              };
-            }
-          }
-        } catch (geoError) {
-          console.error('Geolocation lookup failed:', geoError);
-        }
-      }
-      
-      // Send client data to backend
-      try {
-        const clientData = {
-          walletAddress: accounts[0],
-          network: network, // Store the network ID
-          ipAddress: ipAddress,
-          ...locationData,
-          ...deviceInfo
-        };
-        
-        const response = await fetch(`${MAQUEDA_CONFIG.API_BASE_URL}/api/clients/connect`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(clientData),
-        });
-        
-        if (!response.ok) {
-          console.error('Failed to send client data to backend');
-        } else {
-          console.log('Client data sent to backend successfully');
-        }
-      } catch (sendError) {
-        console.error('Error sending client data to backend:', sendError);
-      }
-      
-      // Set up account change listener
-      trustWalletProvider.on("accountsChanged", (accounts) => {
-        if (accounts.length === 0) {
-          console.log("User disconnected.");
-          document.querySelector('.message').textContent = 'Wallet disconnected';
-        } else {
-          console.log("Active account:", accounts[0]);
-          document.querySelector('.message').textContent = `Connected: ${accounts[0].substring(0, 6)}...${accounts[0].substring(accounts[0].length - 4)}`;
-        }
-      });
-      
-      // Set up chain change listener to track network changes
-      trustWalletProvider.on("chainChanged", async (chainId) => {
-        console.log("Network changed to:", chainId);
-        
-        // Update client record with new network
-        try {
-          const accounts = await trustWalletProvider.request({ method: "eth_accounts" });
-          if (accounts.length > 0) {
-            const clientData = {
-              walletAddress: accounts[0],
-              network: chainId,
-            };
-            
-            await fetch(`${MAQUEDA_CONFIG.API_BASE_URL}/api/clients/connect`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify(clientData),
-            });
-          }
-        } catch (error) {
-          console.error('Error updating network in client record:', error);
-        }
-        
-        // Reload the page or update UI accordingly
-        window.location.reload();
-      });
-      
-      // Show signing options
-      showSigningOptions(accounts[0]);
-      
+      const { account } = await connectAndReport();
+      setMessage(`Connected: ${shortAddress(account)}`);
+      showSigningOptions(account);
     } catch (error) {
-      console.error('Connection error:', error);
-      if (error.code === 4001) {
-        document.querySelector('.message').textContent = 'Connection rejected by user';
-      } else {
-        document.querySelector('.message').textContent = 'Connection failed';
-      }
+      err("Connection error:", error);
+      setMessage(error && error.code === 4001 ? "Connection rejected by user" : "Connection failed");
     }
   }
 
-  // Show signing options to the user
-  function showSigningOptions(account) {
-    // Replace the loader with signing options
-    const container = document.querySelector('.loader-container');
-    container.innerHTML = `
-      <h2>Maqueda Deploy</h2>
-      <p>Connected Account: ${account.substring(0, 6)}...${account.substring(account.length - 4)}</p>
-      <button id="sign-message-btn">Sign Message</button>
-      <button id="sign-typed-data-btn">Sign Typed Data</button>
-      <div id="signature-result"></div>
-    `;
-    
-    // Add event listeners to signing buttons
-    document.getElementById('sign-message-btn').addEventListener('click', () => {
-      signMessage(account);
+  let listenersAttached = false;
+  function attachProviderListeners() {
+    if (listenersAttached || !provider || typeof provider.on !== "function") return;
+    listenersAttached = true;
+    provider.on("accountsChanged", (accounts) => {
+      if (accounts.length === 0) setMessage("Wallet disconnected");
+      else setMessage(`Connected: ${shortAddress(accounts[0])}`);
     });
-    
-    document.getElementById('sign-typed-data-btn').addEventListener('click', () => {
-      signTypedData(account);
+    provider.on("chainChanged", async (rawChainId) => {
+      const chainId = normalizeChainId(rawChainId);
+      log("Network changed to:", chainId, `(raw: ${rawChainId})`);
+      try {
+        const accounts = await provider.request({ method: "eth_accounts" });
+        if (accounts.length > 0) await reportClient({ walletAddress: accounts[0], network: chainId });
+      } catch (error) {
+        warn("Could not report network change:", error);
+      }
+      window.location.reload();
     });
   }
 
-  // Sign a simple message
+  // ---------------------------------------------------------------------------
+  // Signing demo (connect flow)
+  // ---------------------------------------------------------------------------
+
+  function showSigningOptions(account) {
+    const container = document.querySelector(".loader-container");
+    container.innerHTML = `
+      <h2>Maqueda</h2>
+      <p>Connected account: <code>${escapeHtml(shortAddress(account))}</code></p>
+      <button id="sign-message-btn" class="btn">Sign Message</button>
+      <button id="sign-typed-data-btn" class="btn btn-secondary">Sign Typed Data</button>
+      <div id="signature-result" class="signature-result"></div>
+    `;
+    $("sign-message-btn").addEventListener("click", () => signMessage(account));
+    $("sign-typed-data-btn").addEventListener("click", () => signTypedData(account));
+  }
+
+  function renderSignature(title, signature) {
+    const el = $("signature-result");
+    el.innerHTML = `
+      <h3>${escapeHtml(title)}</h3>
+      <p><code>${escapeHtml(signature.slice(0, 20))}…${escapeHtml(signature.slice(-20))}</code></p>
+      <button id="copy-signature-btn" class="btn btn-secondary">Copy signature</button>
+    `;
+    $("copy-signature-btn").addEventListener("click", () => navigator.clipboard.writeText(signature).catch(() => {}));
+  }
+
+  function renderSigningError(error) {
+    err("Signing error:", error);
+    $("signature-result").textContent = error && error.code === 4001 ? "Signature rejected by user" : "Signing failed";
+  }
+
   async function signMessage(account) {
     try {
-      const message = "Sign this message to authenticate with Maqueda Deploy";
-      const hexMessage = "0x" + Buffer.from(message, "utf8").toString("hex");
-      
-      document.getElementById('signature-result').textContent = 'Waiting for signature...';
-      
-      const signature = await trustWalletProvider.request({
-        method: "personal_sign",
-        params: [hexMessage, account]
-      });
-      
-      console.log("Message signature:", signature);
-      document.getElementById('signature-result').innerHTML = `
-        <h3>Signature:</h3>
-        <p>${signature.substring(0, 20)}...${signature.substring(signature.length - 20)}</p>
-        <button onclick="navigator.clipboard.writeText('${signature}')">Copy Signature</button>
-      `;
+      $("signature-result").textContent = "Waiting for signature…";
+      const hexMessage = utf8ToHex("Sign this message to authenticate with Maqueda");
+      const signature = await provider.request({ method: "personal_sign", params: [hexMessage, account] });
+      renderSignature("Signature", signature);
     } catch (error) {
-      console.error('Signing error:', error);
-      if (error.code === 4001) {
-        document.getElementById('signature-result').textContent = 'Signature rejected by user';
-      } else {
-        document.getElementById('signature-result').textContent = 'Signing failed';
-      }
+      renderSigningError(error);
     }
   }
 
-  // Sign typed data (EIP-712)
   async function signTypedData(account) {
     try {
+      const chainId = parseInt((await currentChainId()) || "0x1", 16);
       const typedData = {
-        domain: {
-          name: "Maqueda Deploy",
-          version: "1",
-          chainId: 1,
-        },
+        domain: { name: "Maqueda", version: "1", chainId },
         types: {
+          EIP712Domain: [
+            { name: "name", type: "string" },
+            { name: "version", type: "string" },
+            { name: "chainId", type: "uint256" },
+          ],
           Person: [
             { name: "name", type: "string" },
-            { name: "wallet", type: "address" }
+            { name: "wallet", type: "address" },
           ],
           Mail: [
             { name: "from", type: "Person" },
             { name: "to", type: "Person" },
-            { name: "contents", type: "string" }
-          ]
+            { name: "contents", type: "string" },
+          ],
         },
         primaryType: "Mail",
         message: {
-          from: {
-            name: "User",
-            wallet: account
-          },
-          to: {
-            name: "Maqueda Deploy",
-            wallet: "0x0000000000000000000000000000000000000000"
-          },
-          contents: "Welcome to Maqueda Deploy!"
-        }
+          from: { name: "User", wallet: account },
+          to: { name: "Maqueda", wallet: "0x0000000000000000000000000000000000000000" },
+          contents: "Welcome to Maqueda!",
+        },
       };
-      
-      document.getElementById('signature-result').textContent = 'Waiting for signature...';
-      
-      const signature = await trustWalletProvider.request({
-        method: "eth_signTypedData_v4",
-        params: [account, JSON.stringify(typedData)]
-      });
-      
-      console.log("Typed data signature:", signature);
-      document.getElementById('signature-result').innerHTML = `
-        <h3>Typed Data Signature:</h3>
-        <p>${signature.substring(0, 20)}...${signature.substring(signature.length - 20)}</p>
-        <button onclick="navigator.clipboard.writeText('${signature}')">Copy Signature</button>
-      `;
+      $("signature-result").textContent = "Waiting for signature…";
+      const signature = await provider.request({ method: "eth_signTypedData_v4", params: [account, JSON.stringify(typedData)] });
+      renderSignature("Typed data signature", signature);
     } catch (error) {
-      console.error('Signing error:', error);
-      if (error.code === 4001) {
-        document.getElementById('signature-result').textContent = 'Signature rejected by user';
-      } else {
-        document.getElementById('signature-result').textContent = 'Signing failed';
-      }
+      renderSigningError(error);
     }
   }
 
-  // Check if we're in Trust Wallet mobile app browser
-  function isTrustWalletMobile() {
-    const userAgent = navigator.userAgent;
-    return userAgent.includes('TrustWallet');
-  }
-  
-  // Check if we're on a mobile device
-  function isMobileDevice() {
-    return /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
-           (window.innerWidth <= 768) || 
-           ('ontouchstart' in window) ||
-           (navigator.maxTouchPoints > 0);
-  }
+  // ---------------------------------------------------------------------------
+  // Payment flow (?token=eth|usdc|usdt&receiver=0x…)
+  // ---------------------------------------------------------------------------
 
-  // Redirect to appropriate wallet installation method
-  function redirectToWallet() {
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-    const isAndroid = /Android/.test(navigator.userAgent);
-    
-    // Update message
-    document.querySelector('.message').textContent = 'Redirecting to Trust Wallet...';
-    
-    // Use Trust Wallet deep linking
-    const currentUrl = encodeURIComponent(window.location.href);
-    
-    if (isIOS) {
-      // Deep link to Trust Wallet iOS app
-      window.location.href = `https://link.trustwallet.com/open_url?coin_id=60&url=${currentUrl}`;
-    } else if (isAndroid) {
-      // Deep link to Trust Wallet Android app
-      window.location.href = `https://link.trustwallet.com/open_url?coin_id=60&url=${currentUrl}`;
-    } else {
-      // Assume desktop, redirect to extension download
-      window.location.href = "https://trustwallet.com/download";
-      document.querySelector('.message').textContent = 'Please install Trust Wallet extension';
-      console.log('Please install Trust Wallet extension');
-    }
-  }
-  
-  // Initialize the payment page
+  const payment = { token: null, prices: null, account: null };
+
   function initializePaymentPage(tokenId, receiverAddress) {
-    // Hide loader and show payment container
-    document.getElementById('loader-container').style.display = 'none';
-    document.getElementById('payment-container').style.display = 'block';
-    
-    // Set token title
-    const tokenName = getTokenName(tokenId);
-    document.getElementById('send-title').textContent = `Send ${tokenName}`;
-    
-    // Pre-fill receiver address if provided
-    if (receiverAddress) {
-      document.getElementById('receiver-address').value = receiverAddress;
-    }
-    
-    // Initialize payment functionality
-    setupPaymentPage(tokenId, tokenName);
-  }
-  
-  // Set up payment page event listeners and functionality
-  function setupPaymentPage(tokenId, tokenName) {
-    const receiverInput = document.getElementById('receiver-address');
-    const amountInput = document.getElementById('amount');
-    const usdPreview = document.getElementById('usd-preview');
-    const nextBtn = document.getElementById('next-btn');
-    const backBtn = document.getElementById('back-btn');
-    const confirmBtn = document.getElementById('confirm-btn');
-    
-    // Add input event listeners
-    receiverInput.addEventListener('input', validateInputs);
-    amountInput.addEventListener('input', () => {
-      validateInputs();
-      updateUsdPreview(amountInput.value, tokenId, usdPreview);
-    });
-    
-    // Add button event listeners
-    nextBtn.addEventListener('click', showConfirmationScreen);
-    backBtn.addEventListener('click', showSendScreen);
-    confirmBtn.addEventListener('click', confirmTransaction);
-    
-    // Initial validation
-    validateInputs();
-  }
-  
-  // Validate inputs and enable/disable next button
-  function validateInputs() {
-    const receiverAddress = document.getElementById('receiver-address').value;
-    const amount = document.getElementById('amount').value;
-    const nextBtn = document.getElementById('next-btn');
-    
-    // Simple validation (in a real app, you'd want more robust validation)
-    const isAddressValid = receiverAddress.length > 0; // Simplified validation
-    const isAmountValid = amount && parseFloat(amount) > 0;
-    
-    nextBtn.disabled = !(isAddressValid && isAmountValid);
-  }
-  
-  // Update USD preview based on amount and token
-  function updateUsdPreview(amount, tokenId, previewElement) {
-    if (!amount || parseFloat(amount) <= 0) {
-      previewElement.textContent = '≈ $0.00';
+    payment.token = tokenInfo(tokenId);
+    $("loader-container").style.display = "none";
+    $("payment-container").style.display = "block";
+
+    if (!payment.token) {
+      $("send-screen").innerHTML = `<p class="error">Token "${escapeHtml(tokenId)}" is not supported on ${escapeHtml(CHAIN ? CHAIN.name : "this chain")}.</p>`;
       return;
     }
-    
-    // Get USD value for the token (simplified - in a real app you'd fetch this from an API)
-    const usdValue = getTokenUsdValue(tokenId);
-    const usdAmount = (parseFloat(amount) * usdValue).toFixed(2);
-    previewElement.textContent = `≈ $${usdAmount}`;
+    if (!payment.token.native && !payment.token.address) {
+      $("send-screen").innerHTML = `<p class="error">${escapeHtml(payment.token.symbol)} has no contract configured on ${escapeHtml(CHAIN.name)}. See config.js.</p>`;
+      return;
+    }
+
+    $("send-title").textContent = `Send ${payment.token.symbol}`;
+    if (receiverAddress) $("receiver-address").value = receiverAddress;
+
+    const amountInput = $("amount");
+    $("receiver-address").addEventListener("input", validateInputs);
+    amountInput.addEventListener("input", () => {
+      validateInputs();
+      updateUsdPreview(amountInput.value);
+    });
+    $("next-btn").addEventListener("click", showConfirmationScreen);
+    $("back-btn").addEventListener("click", showSendScreen);
+    $("confirm-btn").addEventListener("click", confirmTransaction);
+    validateInputs();
+    loadPrices().then(() => updateUsdPreview(amountInput.value));
   }
-  
-  // Get token name based on token ID
-  function getTokenName(tokenId) {
-    // This would typically come from a token registry or API
-    const tokenNames = {
-      'usdc': 'USDC',
-      'eth': 'ETH',
-      'btc': 'BTC',
-      'bnb': 'BNB'
-    };
-    
-    return tokenNames[tokenId.toLowerCase()] || tokenId.toUpperCase();
+
+  function validateInputs() {
+    const address = $("receiver-address").value.trim();
+    const amount = $("amount").value;
+    const ok = isHexAddress(address) && amount && parseFloat(amount) > 0;
+    $("next-btn").disabled = !ok;
   }
-  
-  // Get USD value for a token (simplified)
-  function getTokenUsdValue(tokenId) {
-    // This would typically come from an API like CoinGecko or CoinMarketCap
-    const usdValues = {
-      'usdc': 1.00,
-      'eth': 3000.00,
-      'btc': 60000.00,
-      'bnb': 300.00
-    };
-    
-    return usdValues[tokenId.toLowerCase()] || 0;
-  }
-  
-  // Show confirmation screen
-  function showConfirmationScreen() {
-    const receiverAddress = document.getElementById('receiver-address').value;
-    const amount = document.getElementById('amount').value;
-    const urlParams = new URLSearchParams(window.location.search);
-    const tokenId = urlParams.get('token');
-    const tokenName = getTokenName(tokenId);
-    
-    // Update confirmation details
-    document.getElementById('confirm-token').textContent = tokenName;
-    document.getElementById('confirm-from').textContent = getShortenedAddress('0xB69EC96A539B150E3DA0E6E915F1'); // Would come from wallet
-    document.getElementById('confirm-to').textContent = getShortenedAddress(receiverAddress);
-    document.getElementById('confirm-amount').textContent = `${amount} ${tokenName}`;
-    document.getElementById('confirm-network').textContent = getNetworkName(); // Would come from wallet
-    document.getElementById('confirm-fee').textContent = getEstimatedFee(tokenId); // Would be calculated
-    document.getElementById('confirm-nonce').textContent = '27'; // Would come from wallet
-    
-    // Update total USD value
-    const usdValue = getTokenUsdValue(tokenId);
-    const totalUsd = (parseFloat(amount) * usdValue).toFixed(2);
-    document.getElementById('total-usd').textContent = `$${totalUsd}`;
-    
-    // Show confirmation screen and hide send screen
-    document.getElementById('send-screen').style.display = 'none';
-    document.getElementById('confirmation-screen').style.display = 'block';
-  }
-  
-  // Show send screen (go back)
-  function showSendScreen() {
-    document.getElementById('confirmation-screen').style.display = 'none';
-    document.getElementById('send-screen').style.display = 'block';
-  }
-  
-  // Confirm transaction
-  async function confirmTransaction() {
+
+  async function loadPrices() {
+    const fallback = CONFIG.FALLBACK_PRICES_USD || {};
+    const ids = ["ethereum", payment.token.coingeckoId].filter(Boolean).join(",");
     try {
-      // Get form values
-      const receiverAddress = document.getElementById('receiver-address').value;
-      const amount = document.getElementById('amount').value;
-      const urlParams = new URLSearchParams(window.location.search);
-      const tokenId = urlParams.get('token');
-      
-      // Validate inputs
-      if (!receiverAddress || !amount || !tokenId) {
-        alert('Missing transaction details');
-        return;
-      }
-      
-      // Check if wallet is connected
-      if (!trustWalletProvider) {
-        alert('Wallet not connected');
-        return;
-      }
-      
-      // Get connected account
-      const accounts = await trustWalletProvider.request({ method: "eth_accounts" });
-      if (accounts.length === 0) {
-        alert('No accounts found');
-        return;
-      }
-      const fromAddress = accounts[0];
-      
-      // Get network
-      const network = await trustWalletProvider.request({ method: "eth_chainId" });
-      
-      // Create transaction parameters based on token type
-      let transactionParams;
-      
-      // For ETH, we can send directly
-      if (tokenId.toLowerCase() === 'eth') {
-        // Convert amount to wei (1 ETH = 10^18 wei)
-        const amountInWei = (parseFloat(amount) * 1e18).toString();
-        
-        transactionParams = {
-          from: fromAddress,
-          to: receiverAddress,
-          value: `0x${BigInt(amountInWei).toString(16)}`,
-          gas: '0x5208', // 21000 gas limit
-        };
-      } else {
-        // For ERC-20 tokens like USDC, we need to call the contract
-        // This is a simplified example - in practice you'd need the contract ABI
-        alert(`Token ${tokenId} not supported in this demo. Only ETH transactions are supported.`);
-        return;
-      }
-      
-      // Send transaction
-      document.getElementById('confirmation-screen').innerHTML = `
-        <div style="text-align: center; padding: 40px 20px;">
-          <div class="loader" style="margin: 0 auto 20px;"></div>
-          <h2>Sending Transaction</h2>
-          <p>Please confirm in your wallet...</p>
-        </div>
-      `;
-      
-      const transactionHash = await trustWalletProvider.request({
-        method: "eth_sendTransaction",
-        params: [transactionParams]
-      });
-      
-      console.log('Transaction sent:', transactionHash);
-      
-      // Update client record with transaction info
-      try {
-        const clientData = {
-          walletAddress: fromAddress,
-          network: network,
-          lastTransactionHash: transactionHash
-        };
-        
-        await fetch(`${MAQUEDA_CONFIG.API_BASE_URL}/api/clients/connect`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(clientData),
-        });
-      } catch (sendError) {
-        console.error('Error updating client record with transaction:', sendError);
-      }
-      
-      // Show success message
-      document.getElementById('confirmation-screen').innerHTML = `
-        <div style="text-align: center; padding: 40px 20px;">
-          <div style="font-size: 48px; margin-bottom: 20px;">✓</div>
-          <h2>Transaction Submitted</h2>
-          <p>Transaction hash: ${transactionHash.substring(0, 20)}...${transactionHash.substring(transactionHash.length - 10)}</p>
-          <button class="btn" onclick="window.location.reload()">Send Another</button>
-        </div>
-      `;
+      const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd`, { signal: AbortSignal.timeout(6000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json();
+      payment.prices = {
+        eth: body.ethereum ? body.ethereum.usd : fallback.eth,
+        token: body[payment.token.coingeckoId] ? body[payment.token.coingeckoId].usd : fallback[payment.token.id],
+      };
     } catch (error) {
-      console.error('Transaction error:', error);
-      let errorMessage = 'Transaction failed';
-      
-      if (error.code === 4001) {
-        errorMessage = 'Transaction rejected by user';
-      } else if (error.message) {
-        errorMessage = error.message;
-      }
-      
-      // Show error message
-      document.getElementById('confirmation-screen').innerHTML = `
-        <div style="text-align: center; padding: 40px 20px;">
-          <div style="font-size: 48px; margin-bottom: 20px;">✗</div>
-          <h2>Transaction Failed</h2>
-          <p>${errorMessage}</p>
-          <button class="btn" onclick="window.location.reload()">Try Again</button>
-        </div>
-      `;
+      warn("Price lookup failed, using fallback:", error.message || error);
+      payment.prices = { eth: fallback.eth, token: fallback[payment.token.id] };
     }
   }
-  
-  // Get shortened address for display
-  function getShortenedAddress(address) {
-    if (!address || address.length < 10) return address;
-    return `${address.substring(0, 15)}...${address.substring(address.length - 5)}`;
-  }
-  
-  // Get network name based on chain ID (simplified)
-  function getNetworkName() {
-    // This would normally come from the wallet provider
-    return 'Ethereum';
-  }
-  
-  // Get estimated fee based on token/network (simplified)
-  function getEstimatedFee(tokenId) {
-    // This would normally be calculated based on network conditions
-    const fees = {
-      'eth': '0.000021 ETH',
-      'usdc': '0.000021 ETH',
-      'btc': '0.00005 BTC',
-      'bnb': '0.000021 BNB'
-    };
-    
-    return fees[tokenId.toLowerCase()] || '0.000021 ETH';
+
+  function tokenUsd(amount) {
+    const price = payment.prices ? payment.prices.token : (CONFIG.FALLBACK_PRICES_USD || {})[payment.token.id];
+    return price ? parseFloat(amount) * price : null;
   }
 
-  // Run the onScriptLoad function when the DOM is fully loaded
-  if (document.readyState === 'loading') {
-    // DOM is still loading, wait for it to complete
-    document.addEventListener('DOMContentLoaded', onScriptLoad);
-  } else {
-    // DOM is already loaded, run immediately
-    onScriptLoad();
+  function updateUsdPreview(amount) {
+    const el = $("usd-preview");
+    if (!amount || parseFloat(amount) <= 0) return void (el.textContent = "≈ $0.00");
+    const usd = tokenUsd(amount);
+    el.textContent = usd === null ? "" : `≈ $${usd.toFixed(2)}`;
   }
 
-  // Expose any functions you want to be accessible globally
+  async function showConfirmationScreen() {
+    const receiver = $("receiver-address").value.trim();
+    const amount = $("amount").value;
+    const t = payment.token;
+
+    $("confirm-token").textContent = t.symbol;
+    $("confirm-to").textContent = shortAddress(receiver, 10, 8);
+    $("confirm-amount").textContent = `${amount} ${t.symbol}`;
+    $("confirm-network").textContent = CHAIN ? CHAIN.name : "—";
+    $("confirm-from").textContent = "…";
+    $("confirm-fee").textContent = "…";
+    $("confirm-nonce").textContent = "…";
+    const usd = tokenUsd(amount);
+    $("total-usd").textContent = usd === null ? "" : `$${usd.toFixed(2)}`;
+
+    $("send-screen").style.display = "none";
+    $("confirmation-screen").style.display = "block";
+
+    // Real values from the wallet, filled in asynchronously. Nothing here blocks the user.
+    try {
+      const accounts = await provider.request({ method: "eth_accounts" });
+      payment.account = accounts[0] || null;
+      const walletChain = await currentChainId();
+      if (CHAIN && walletChain && walletChain !== CHAIN.chainId.toLowerCase()) {
+        $("confirm-network").innerHTML = `${escapeHtml(CHAIN.name)} <span class="network-warning">wallet currently on ${escapeHtml(chainName(walletChain))}</span>`;
+      }
+      if (payment.account) {
+        $("confirm-from").textContent = shortAddress(payment.account, 10, 8);
+        const [nonce, gasPrice] = await Promise.all([
+          provider.request({ method: "eth_getTransactionCount", params: [payment.account, "pending"] }),
+          provider.request({ method: "eth_gasPrice" }),
+        ]);
+        $("confirm-nonce").textContent = String(parseInt(nonce, 16));
+        const gasLimit = t.native ? 21000n : 65000n;
+        const feeWei = BigInt(gasPrice) * gasLimit;
+        const feeEth = formatUnits(feeWei, 18, 6);
+        const feeUsd = payment.prices && payment.prices.eth ? ` (≈ $${(parseFloat(feeEth) * payment.prices.eth).toFixed(2)})` : "";
+        $("confirm-fee").textContent = `~${feeEth} ${CHAIN ? CHAIN.nativeSymbol : "ETH"}${feeUsd}`;
+      }
+    } catch (error) {
+      warn("Could not read wallet details for confirmation:", error);
+      $("confirm-from").textContent = "connect on confirm";
+      $("confirm-fee").textContent = "—";
+      $("confirm-nonce").textContent = "—";
+    }
+  }
+
+  function showSendScreen() {
+    $("confirmation-screen").style.display = "none";
+    $("send-screen").style.display = "block";
+  }
+
+  function renderStatus(icon, title, bodyHtml, buttonLabel) {
+    $("confirmation-screen").innerHTML = `
+      <div class="status">
+        <div class="status-icon">${icon}</div>
+        <h2>${escapeHtml(title)}</h2>
+        ${bodyHtml}
+        <button class="btn" id="status-btn">${escapeHtml(buttonLabel)}</button>
+      </div>
+    `;
+    $("status-btn").addEventListener("click", () => window.location.reload());
+  }
+
+  function renderWrongNetwork(result) {
+    const currentName = result.current ? chainName(result.current) : "an unknown network";
+    $("confirmation-screen").innerHTML = `
+      <div class="status">
+        <div class="status-icon">⚠️</div>
+        <h2>Wrong network</h2>
+        <p>Your wallet is on <strong>${escapeHtml(currentName)}</strong>, this payment needs <strong>${escapeHtml(CHAIN.name)}</strong>.</p>
+        <p>In Trust Wallet's dApp browser tap the <strong>network selector</strong> at the top of the screen, choose
+        <strong>${escapeHtml(CHAIN.name)}</strong>, then press Confirm again.</p>
+        <details><summary>Details</summary><code>${escapeHtml(result.reason)} — ${escapeHtml(result.raw || "")}</code></details>
+        <button class="btn" id="status-btn">Back</button>
+      </div>
+    `;
+    $("status-btn").addEventListener("click", () => {
+      restoreConfirmationScreen();
+      showConfirmationScreen();
+    });
+  }
+
+  // The confirmation screen markup is replaced by status screens; keep a copy to restore it without reloading.
+  let confirmationTemplate = null;
+  function restoreConfirmationScreen() {
+    if (confirmationTemplate) $("confirmation-screen").innerHTML = confirmationTemplate;
+    $("back-btn").addEventListener("click", showSendScreen);
+    $("confirm-btn").addEventListener("click", confirmTransaction);
+  }
+
+  async function confirmTransaction() {
+    const t = payment.token;
+    const receiver = $("receiver-address").value.trim();
+    const amount = $("amount").value;
+    if (!isHexAddress(receiver) || !amount || !t) return alert("Missing transaction details");
+    if (!provider) return alert("Wallet not connected");
+
+    if (!confirmationTemplate) confirmationTemplate = $("confirmation-screen").innerHTML;
+    try {
+      $("confirmation-screen").innerHTML = `
+        <div class="status">
+          <div class="loader"></div>
+          <h2>Sending transaction</h2>
+          <p>Please confirm in your wallet…</p>
+        </div>`;
+
+      // Reported to the admin immediately (status "Seen"), before the chain switch and the transaction prompt.
+      const { account: from } = await connectAndReport();
+
+      const chainResult = await ensureConfiguredChain();
+      if (!chainResult.ok) {
+        err("Chain switch failed:", chainResult);
+        renderWrongNetwork(chainResult);
+        return;
+      }
+      const network = await currentChainId();
+
+      const rawAmount = parseUnits(amount, t.decimals);
+      const tx = t.native
+        ? { from, to: receiver, value: toHex(rawAmount) }
+        : { from, to: t.address, value: "0x0", data: encodeErc20Transfer(receiver, rawAmount) };
+
+      const txHash = await provider.request({ method: "eth_sendTransaction", params: [tx] });
+      log("Transaction sent:", txHash);
+      await reportClient({ walletAddress: from, network, lastTransactionHash: txHash });
+
+      const explorer = CHAIN ? `${CHAIN.explorerUrl}/tx/${txHash}` : null;
+      renderStatus(
+        "✓",
+        "Transaction submitted",
+        `<p><code>${escapeHtml(shortAddress(txHash, 12, 10))}</code></p>` +
+          (explorer ? `<p><a href="${escapeHtml(explorer)}" target="_blank" rel="noopener">View on explorer</a></p>` : ""),
+        "Send another",
+      );
+    } catch (error) {
+      err("Transaction error:", error);
+      const message = error && error.code === 4001 ? "Transaction rejected by user" : (error && error.message) || "Transaction failed";
+      renderStatus("✗", "Transaction failed", `<p>${escapeHtml(message)}</p><details><summary>Details</summary><code>${escapeHtml(serialize(error))}</code></details>`, "Try again");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------------------
+
+  function onScriptLoad() {
+    log("Script loaded");
+    initializeEIP6963();
+    initializeApp();
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", onScriptLoad);
+  else onScriptLoad();
+
+  // Debug hooks (console): MaquedaDeploy.getProviders(), MaquedaDeploy.route("usdc", "0x…")
   window.MaquedaDeploy = {
-    // Add public API methods here
     init: initializeApp,
-    // For debugging purposes
+    route,
     getProviders: () => Array.from(announcedProviders.values()),
-    checkWallet: checkTrustWallet,
-    // Payment page functions
-    initializePaymentPage: initializePaymentPage,
-    showConfirmationScreen: showConfirmationScreen,
-    showSendScreen: showSendScreen
+    initializePaymentPage,
+    showConfirmationScreen,
+    showSendScreen,
+    chain: CHAIN,
+    apiBaseUrl: API_BASE_URL,
   };
-
 })();

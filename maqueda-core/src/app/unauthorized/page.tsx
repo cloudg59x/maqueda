@@ -1,34 +1,24 @@
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { verifySession } from "@/lib/auth";
+
+export const metadata = { title: "Access denied" };
 
 export default async function UnauthorizedPage() {
   const { isAuth } = await verifySession();
-  
-  // If user is not authenticated, redirect to login
-  if (!isAuth) {
-    redirect('/auth/login');
-  }
-
+  if (!isAuth) redirect("/auth/login");
   return (
-    <div className="flex min-h-screen items-center justify-center">
+    <div className="flex min-h-screen items-center justify-center p-4">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Access Denied</CardTitle>
-          <CardDescription>You don't have permission to view this page</CardDescription>
+          <CardTitle>Access denied</CardTitle>
+          <CardDescription>This page needs the ADMIN role.</CardDescription>
         </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">
-            Your account doesn't have the required permissions to access this resource. 
-            Please contact your administrator if you believe this is an error.
-          </p>
-        </CardContent>
+        <CardContent className="text-sm text-muted-foreground">Ask an administrator to change your role, or go back to the dashboard.</CardContent>
         <CardFooter>
-          <Button asChild className="w-full">
-            <Link href="/admin">Go to Dashboard</Link>
-          </Button>
+          <Button asChild className="w-full"><Link href="/admin">Back to dashboard</Link></Button>
         </CardFooter>
       </Card>
     </div>

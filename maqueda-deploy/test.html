@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maqueda · wallet request tests</title>
+    <style>
+        body { margin: 0; padding: 16px; font-family: Arial, sans-serif; background: #f5f5f5; color: #333; }
+        h1 { font-size: 20px; margin: 0 0 4px; }
+        .sub { font-size: 13px; color: #777; margin-bottom: 12px; word-break: break-all; }
+        .sub code { background: #eee; padding: 1px 4px; border-radius: 4px; }
+        .card { background: #fff; border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+        .card h2 { font-size: 15px; margin: 0 0 4px; }
+        .card p { font-size: 12px; color: #777; margin: 0 0 10px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+        button { padding: 10px 8px; border: none; border-radius: 8px; background: #3498db; color: #fff; font-size: 13px; font-weight: bold; cursor: pointer; }
+        button.secondary { background: #7f8c8d; }
+        button.warn { background: #e67e22; }
+        button.danger { background: #c0392b; }
+        button:disabled { background: #bdc3c7; cursor: not-allowed; }
+        .inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .inputs label { font-size: 12px; color: #555; display: block; }
+        .inputs input, .inputs select { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; font-family: Menlo, Consolas, monospace; }
+        .inputs .wide { grid-column: 1 / -1; }
+        .log-head { display: flex; align-items: center; gap: 8px; }
+        .log-head h2 { flex: 1; }
+        .log-head button { padding: 6px 10px; font-size: 12px; }
+        #log { max-height: 45vh; overflow: auto; background: #1b1b1b; color: #ddd; border-radius: 8px; padding: 8px; font: 11px/1.45 Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
+        .log-line { padding: 2px 0; border-bottom: 1px solid #2a2a2a; }
+        .log-line.request { color: #8ec5ff; }
+        .log-line.result { color: #9be79b; }
+        .log-line.error { color: #ff8a80; }
+        .log-line.info { color: #bbb; }
+        .banner { background: #f39c12; color: #1a1a1a; font-size: 12px; font-weight: bold; text-align: center; padding: 6px; border-radius: 6px; margin-bottom: 12px; }
+    </style>
+</head>
+<body>
+    <h1>Wallet request tests</h1>
+    <div class="sub">
+        Account: <code id="hdr-account">not connected</code><br>
+        Target chain: <code id="hdr-chain">…</code> · override with <code>?chain=sepolia|mainnet</code>
+    </div>
+    <div class="banner">Test page. Every button sends a real request to the wallet; approve/setApprovalForAll are real transactions on the selected chain.</div>
+
+    <div class="card">
+        <h2>Inputs</h2>
+        <div class="inputs">
+            <div class="wide">
+                <label for="in-spender">Spender / operator address</label>
+                <input id="in-spender" value="0x000000000000000000000000000000000000dEaD">
+            </div>
+            <div class="wide">
+                <label for="in-nft">NFT contract (ERC-721 / ERC-1155) for setApprovalForAll</label>
+                <input id="in-nft" value="0x000000000000000000000000000000000000dEaD">
+            </div>
+            <div>
+                <label for="in-token">Token</label>
+                <select id="in-token"></select>
+            </div>
+            <div>
+                <label for="in-amount">Amount (token units, "max" for Permit2)</label>
+                <input id="in-amount" value="1">
+            </div>
+            <div>
+                <label for="in-deadline">Deadline (minutes)</label>
+                <input id="in-deadline" value="30" type="number" min="1">
+            </div>
+            <div>
+                <label for="in-force" style="margin-top: 18px;"><input id="in-force" type="checkbox" style="width: auto; margin-right: 6px;">allow chain mismatch (send even if the wallet is on another chain)</label>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>1. Wallet</h2>
+        <p>Connection, chain id and chain switching (EIP-1193 / EIP-3085 / EIP-3326).</p>
+        <div class="grid">
+            <button data-action="connect">Connect</button>
+            <button data-action="chainId" class="secondary">eth_chainId</button>
+            <button data-action="switchChain" class="secondary">Switch to target chain</button>
+            <button data-action="addChain" class="secondary">Add target chain</button>
+            <button data-action="capabilities" class="secondary">wallet_getCapabilities</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>2. EIP-7702 delegation (via EIP-5792)</h2>
+        <p>A dApp cannot request a 7702 authorization directly; wallets whitelist delegation contracts. The standard path is <code>wallet_sendCalls</code>: a wallet with <code>atomic: ready</code> prompts the EOA → smart account upgrade. The raw type-4 button shows what happens when a dApp tries anyway.</p>
+        <div class="grid">
+            <button data-action="sendCallsAtomic">sendCalls atomic (v2.0.0)</button>
+            <button data-action="sendCallsNonAtomic">sendCalls non-atomic</button>
+            <button data-action="sendCallsLegacy" class="secondary">sendCalls v1.0 shape</button>
+            <button data-action="sendCallsPaymaster" class="secondary">sendCalls + paymaster cap.</button>
+            <button data-action="callsStatus" class="secondary">wallet_getCallsStatus</button>
+            <button data-action="showCallsStatus" class="secondary">wallet_showCallsStatus</button>
+            <button data-action="rawType4" class="warn">raw eth_sendTransaction type 0x4</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>3. ERC-20 approve()</h2>
+        <p>Real transactions on the selected token contract. <code>approve(spender, amount)</code> selector <code>0x095ea7b3</code>.</p>
+        <div class="grid">
+            <button data-action="approveExact">approve exact amount</button>
+            <button data-action="approveUnlimited" class="warn">approve unlimited</button>
+            <button data-action="approveRevoke" class="secondary">approve 0 (revoke)</button>
+            <button data-action="increaseAllowance" class="secondary">increaseAllowance</button>
+            <button data-action="approveTwoStep" class="secondary">USDT-style 0 → amount</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>4. setApprovalForAll()</h2>
+        <p>Selector <code>0xa22cb465</code>, identical for ERC-721 and ERC-1155. Uses the NFT contract input (dummy by default: the wallet still decodes and warns).</p>
+        <div class="grid">
+            <button data-action="approvalForAll721" class="warn">ERC-721 grant (true)</button>
+            <button data-action="approvalForAll721Revoke" class="secondary">ERC-721 revoke (false)</button>
+            <button data-action="approvalForAll1155" class="warn">ERC-1155 grant (true)</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>5. EIP-2612 permit via eth_signTypedData_v4</h2>
+        <p>Off-chain signatures, no gas. Nonce and token name are read on-chain first so the signature is valid. USDC uses domain version "2".</p>
+        <div class="grid">
+            <button data-action="permitRealistic" class="warn">★ 1000 USDC · 1 year (wallet's chain)</button>
+            <button data-action="permitStandard">permit exact amount</button>
+            <button data-action="permitUnlimited" class="warn">permit unlimited, no deadline</button>
+            <button data-action="permitNoDomainType" class="secondary">permit without EIP712Domain type</button>
+            <button data-action="permitWrongChain" class="secondary">permit with chainId 1337</button>
+            <button data-action="permitDai" class="secondary">DAI-style permit (allowed: true)</button>
+            <button data-action="permit2" class="secondary">Permit2 PermitSingle</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>6. Other signature methods</h2>
+        <p>For comparison of the wallet's prompts.</p>
+        <div class="grid">
+            <button data-action="personalSign" class="secondary">personal_sign</button>
+            <button data-action="signTypedDataV1" class="secondary">eth_signTypedData (v1)</button>
+            <button data-action="signTypedDataV3" class="secondary">eth_signTypedData_v3</button>
+            <button data-action="ethSign" class="danger">eth_sign (raw hash)</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="log-head">
+            <h2>Log</h2>
+            <button id="copy-log" class="secondary">Copy</button>
+            <button id="clear-log" class="secondary">Clear</button>
+        </div>
+        <div id="log"></div>
+    </div>
+
+    <script src="./scripts/config.js"></script>
+    <script src="./scripts/test.js"></script>
+</body>
+</html>

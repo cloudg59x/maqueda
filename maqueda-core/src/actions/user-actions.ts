@@ -1,145 +1,63 @@
-'use server';
+"use server";
 
-import { prisma } from '@/lib/db';
-import { verifySession } from '@/lib/auth';
-import { revalidatePath } from 'next/cache';
-import bcrypt from 'bcryptjs';
+import bcrypt from "bcryptjs";
+import { revalidatePath } from "next/cache";
+import { z } from "zod";
+import { prisma } from "@/lib/db";
+import { getCurrentUser, requireAdmin } from "@/lib/auth";
+import { audit, AuditAction } from "@/lib/audit";
+import { validatePassword } from "@/lib/security";
 
-// Get all users
-export async function getUsers() {
-  const { isAuth } = await verifySession();
-  if (!isAuth) {
-    throw new Error('Unauthorized');
-  }
-
-  try {
-    const users = await prisma.user.findMany({
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        createdAt: true,
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-    });
-
-    return { success: true, data: users };
-  } catch (error) {
-    console.error('Error fetching users:', error);
-    return { success: false, error: 'Failed to fetch users' };
-  }
+export interface UserRow {
+  id: string;
+  email: string;
+  name: string | null;
+  role: string;
+  createdAt: Date;
 }
 
-// Create a new user
-export async function createUser(formData: FormData) {
-  const { isAuth } = await verifySession();
-  if (!isAuth) {
-    throw new Error('Unauthorized');
-  }
+export async function getUsers(): Promise<UserRow[]> {
+  if (!(await getCurrentUser())) return [];
+  return prisma.user.findMany({ select: { id: true, email: true, name: true, role: true, createdAt: true }, orderBy: { createdAt: "desc" } });
+}
 
+const createUserSchema = z.object({
+  name: z.string().trim().max(80).optional().or(z.literal("")),
+  email: z.string().trim().email(),
+  password: z.string().min(8),
+  role: z.enum(["USER", "ADMIN"]).default("USER"),
+});
+export type CreateUserInput = z.input<typeof createUserSchema>;
+
+export async function createUser(input: CreateUserInput): Promise<{ success: boolean; error?: string }> {
   try {
-    const rawFormData = {
-      name: formData.get('name') as string,
-      email: formData.get('email') as string,
-      password: formData.get('password') as string,
-      role: formData.get('role') as string,
-    };
-
-    // Validate input
-    if (!rawFormData.email || !rawFormData.password) {
-      return { success: false, error: 'Email and password are required' };
-    }
-
-    // Check if user already exists
-    const existingUser = await prisma.user.findUnique({
-      where: { email: rawFormData.email },
-    });
-
-    if (existingUser) {
-      return { success: false, error: 'User with this email already exists' };
-    }
-
-    // Hash password
-    const hashedPassword = await bcrypt.hash(rawFormData.password, 10);
-
-    // Create user
+    const admin = await requireAdmin();
+    const parsed = createUserSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: parsed.error.issues.map((i) => i.message).join(", ") };
+    const pw = validatePassword(parsed.data.password);
+    if (!pw.valid) return { success: false, error: pw.message };
+    const exists = await prisma.user.findUnique({ where: { email: parsed.data.email } });
+    if (exists) return { success: false, error: "A user with this email already exists" };
     const user = await prisma.user.create({
-      data: {
-        email: rawFormData.email,
-        name: rawFormData.name || null,
-        password: hashedPassword,
-        role: rawFormData.role || 'USER',
-      },
+      data: { email: parsed.data.email, name: parsed.data.name || null, password: await bcrypt.hash(parsed.data.password, 10), role: parsed.data.role },
     });
-
-    revalidatePath('/admin/users');
-    return { success: true, data: user };
-  } catch (error) {
-    console.error('Error creating user:', error);
-    return { success: false, error: 'Failed to create user' };
-  }
-}
-
-// Update user
-export async function updateUser(id: string, formData: FormData) {
-  const { isAuth } = await verifySession();
-  if (!isAuth) {
-    throw new Error('Unauthorized');
-  }
-
-  try {
-    const rawFormData = {
-      name: formData.get('name') as string,
-      email: formData.get('email') as string,
-      role: formData.get('role') as string,
-    };
-
-    // Validate input
-    if (!rawFormData.email) {
-      return { success: false, error: 'Email is required' };
-    }
-
-    // Update user
-    const user = await prisma.user.update({
-      where: { id },
-      data: {
-        email: rawFormData.email,
-        name: rawFormData.name || null,
-        role: rawFormData.role || 'USER',
-      },
-    });
-
-    revalidatePath('/admin/users');
-    return { success: true, data: user };
-  } catch (error) {
-    console.error('Error updating user:', error);
-    return { success: false, error: 'Failed to update user' };
-  }
-}
-
-// Delete user
-export async function deleteUser(id: string) {
-  const { isAuth } = await verifySession();
-  if (!isAuth) {
-    throw new Error('Unauthorized');
-  }
-
-  try {
-    // Prevent deleting self
-    // In a real implementation, you would get the current user ID from the session
-    // and compare it with the id parameter
-    
-    await prisma.user.delete({
-      where: { id },
-    });
-
-    revalidatePath('/admin/users');
+    await audit({ actor: `user:${admin.id}`, action: AuditAction.USER_CREATED, details: { userId: user.id, email: user.email, role: user.role } });
+    revalidatePath("/admin/users");
     return { success: true };
   } catch (error) {
-    console.error('Error deleting user:', error);
-    return { success: false, error: 'Failed to delete user' };
+    return { success: false, error: error instanceof Error ? error.message : "Failed to create user" };
+  }
+}
+
+export async function deleteUser(id: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const admin = await requireAdmin();
+    if (admin.id === id) return { success: false, error: "You cannot delete your own account" };
+    const user = await prisma.user.delete({ where: { id }, select: { email: true } });
+    await audit({ actor: `user:${admin.id}`, action: AuditAction.USER_DELETED, details: { userId: id, email: user.email } });
+    revalidatePath("/admin/users");
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Failed to delete user" };
   }
 }

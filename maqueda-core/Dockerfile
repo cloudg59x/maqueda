@@ -1,40 +1,34 @@
-# Use Node.js 20 alpine image
-FROM node:20-alpine
+# Production-only image. Development runs on the host (see compose.yml / README.md).
+# Two targets share the same dependency layer:
+#   --target app     Next.js standalone server
+#   --target worker  balance monitor (tsx)
 
-# Install OpenSSL libraries required by Prisma
+FROM node:20-alpine AS deps
 RUN apk add --no-cache openssl
-
-# Set working directory
 WORKDIR /app
+COPY package.json package-lock.json ./
+COPY prisma ./prisma
+RUN npm ci --ignore-scripts && npx prisma generate
 
-# Create a non-root user
-RUN addgroup -g 1001 -S nodejs
-RUN adduser -S nextjs -u 1001
-
-# Copy package.json and package-lock.json
-COPY package*.json ./
-
-# Install dependencies
-RUN npm ci --legacy-peer-deps
-
-# Copy all files
+FROM deps AS build
 COPY . .
-
-# Create necessary directories with proper permissions
-RUN mkdir -p .next/dev/logs
-RUN chown -R nextjs:nodejs /app
-
-# Switch to non-root user
-USER nextjs
-
-# Generate Prisma client
-RUN npx prisma generate
-
-# Build the Next.js app
+ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-# Expose port 3000
+FROM node:20-alpine AS app
+RUN apk add --no-cache openssl
+WORKDIR /app
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000
+RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001
+COPY --from=build --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=build --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=build --chown=nextjs:nodejs /app/public ./public
+USER nextjs
 EXPOSE 3000
+CMD ["node", "server.js"]
 
-# Start the application
-CMD ["npm", "run", "dev"]
+FROM deps AS worker
+ENV NODE_ENV=production
+COPY tsconfig.json ./
+COPY src ./src
+CMD ["npx", "tsx", "src/worker/monitor.ts"]

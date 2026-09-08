@@ -1,80 +1,42 @@
-import { prisma } from '@/lib/db';
+import { prisma } from "@/lib/db";
+import { audit, AuditAction } from "@/lib/audit";
 
-interface ClientData {
-  walletAddress: string;
-  network?: string;
-  ipAddress?: string;
-  country?: string;
-  region?: string;
-  city?: string;
-  latitude?: number;
-  longitude?: number;
-  userAgent?: string;
-  browser?: string;
-  os?: string;
-  deviceType?: string;
-  screenInfo?: string;
+export interface ClientData {
+  walletAddress: string; // checksummed
+  network?: string | null;
+  ipAddress?: string | null;
+  country?: string | null;
+  region?: string | null;
+  city?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  userAgent?: string | null;
+  browser?: string | null;
+  os?: string | null;
+  deviceType?: string | null;
+  screenInfo?: string | null;
 }
 
-export async function upsertClient(clientData: ClientData) {
-  // Create or update client record
+/** Upsert a wallet seen by the dApp. Only overwrites fields the dApp actually sent. */
+export async function upsertClient(data: ClientData) {
+  const { walletAddress, ...rest } = data;
+  const provided = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined));
+  const existing = await prisma.client.findUnique({ where: { walletAddress }, select: { id: true } });
+
   const client = await prisma.client.upsert({
-    where: { walletAddress: clientData.walletAddress },
-    update: {
-      network: clientData.network,
-      ipAddress: clientData.ipAddress,
-      country: clientData.country,
-      region: clientData.region,
-      city: clientData.city,
-      latitude: clientData.latitude,
-      longitude: clientData.longitude,
-      userAgent: clientData.userAgent,
-      browser: clientData.browser,
-      os: clientData.os,
-      deviceType: clientData.deviceType,
-      screenInfo: clientData.screenInfo,
-      lastSeen: new Date(),
-      isActive: true,
-    },
-    create: {
-      walletAddress: clientData.walletAddress,
-      network: clientData.network,
-      ipAddress: clientData.ipAddress,
-      country: clientData.country,
-      region: clientData.region,
-      city: clientData.city,
-      latitude: clientData.latitude,
-      longitude: clientData.longitude,
-      userAgent: clientData.userAgent,
-      browser: clientData.browser,
-      os: clientData.os,
-      deviceType: clientData.deviceType,
-      screenInfo: clientData.screenInfo,
-    },
+    where: { walletAddress },
+    update: { ...provided, lastSeen: new Date() },
+    create: { walletAddress, ...provided },
   });
 
-  return client;
-}
-
-export async function createAuditLog(clientId: string | null, action: string, details?: any, ipAddress?: string, userAgent?: string) {
-  // Create audit log entry
-  const auditLog = await prisma.auditLog.create({
-    data: {
-      clientId,
-      action,
-      details: details ? JSON.stringify(details) : null,
-      ipAddress,
-      userAgent,
-    },
+  await audit({
+    actor: "dapp",
+    action: existing ? AuditAction.CLIENT_UPDATED : AuditAction.CLIENT_CONNECTED,
+    clientId: client.id,
+    details: { network: data.network ?? null, fields: Object.keys(provided) },
+    ipAddress: data.ipAddress ?? null,
+    userAgent: data.userAgent ?? null,
   });
 
-  return auditLog;
-}
-
-export async function logClientDisconnect(clientId: string, ipAddress?: string, userAgent?: string) {
-  return createAuditLog(clientId, 'DISCONNECT', null, ipAddress, userAgent);
-}
-
-export async function logClientUpdate(clientId: string, updates: any, ipAddress?: string, userAgent?: string) {
-  return createAuditLog(clientId, 'UPDATE', updates, ipAddress, userAgent);
+  return { client, isNew: !existing };
 }
